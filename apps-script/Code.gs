@@ -18,12 +18,15 @@ const SHEETS = {
   Teachers: ['email', 'name', 'salt', 'hash', 'createdAt'],
   Sessions: ['token', 'email', 'expiresAt'],
   Classes: ['classCode', 'className', 'teacherEmail', 'inspectors', 'tasksJson', 'updatedAt',
-            'studentsJson', 'settingsJson', 'rolesChangedAt'],
-  Records: ['recordId', 'classCode', 'className', 'date', 'taskId', 'taskName', 'assignees', 'result', 'memo',
-            'inspectorClass', 'inspectorNo', 'inspectorName', 'inspectedAt', 'receivedAt', 'assigneeNos'],
-  // 역할(업무 담당·검사 담당)이 바뀔 때마다 한 줄씩 기록
-  RoleHistory: ['classCode', 'changedAt', 'teacherEmail', 'inspectors', 'assignments'],
+            'studentsJson', 'settingsJson', 'rolesChangedAt', 'roleMonthsJson'],
+  // 학생 한 명에 대한 평가 한 건이 한 줄 (5단 척도)
+  Records: ['recordId', 'classCode', 'className', 'date', 'taskId', 'taskName', 'studentNo', 'studentName',
+            'score', 'scoreLabel', 'memo', 'inspectorClass', 'inspectorNo', 'inspectorName', 'inspectedAt', 'receivedAt'],
+  // 역할이 바뀔 때마다 한 줄씩 기록
+  RoleHistory: ['classCode', 'month', 'changedAt', 'teacherEmail', 'assignments'],
 };
+
+const SCALE_LABELS = { 5: '매우 잘함', 4: '잘함', 3: '보통', 2: '아쉬움', 1: '노력 필요' };
 
 function setup() {
   Object.keys(SHEETS).forEach(sheet_);
@@ -95,29 +98,44 @@ const ACTIONS = {
       .filter(s => s.no !== 'NaN');
     const tasks = (c.tasks || [])
       .filter(t => t && String(t.name || '').trim())
-      .map(t => ({ id: String(t.id), name: String(t.name).trim(), assigneeNos: (t.assigneeNos || []).map(String) }));
-    const inspectors = (c.inspectors || []).map(String).filter(Boolean);
+      .map(t => ({
+        id: String(t.id),
+        name: String(t.name).trim(),
+        count: clampInt_(t.count, 0, 100, 1),
+        inspector: !!t.inspector,
+        assigneeNos: (t.assigneeNos || []).map(String),
+      }));
+    // 검사 담당 = '검사 역할'로 표시된 역할에 배정된 학생
+    const inspectors = [];
+    tasks.filter(t => t.inspector).forEach(t => t.assigneeNos.forEach(no => {
+      if (inspectors.indexOf(no) < 0) inspectors.push(no);
+    }));
     const settings = {
       evalTopN: clampInt_(c.evalTopN, 1, 30, 3),
       evalMinChecks: clampInt_(c.evalMinChecks, 0, 100, 3),
     };
+    const roleMonths = {};
+    Object.keys(c.roleMonths || {}).forEach(m => {
+      if (/^\d{4}-\d{2}$/.test(m)) roleMonths[m] = c.roleMonths[m];
+    });
     const now = new Date().toISOString();
     const row = [code, className, email, inspectors.join(','), JSON.stringify(tasks), now,
-                 JSON.stringify(students), JSON.stringify(settings), String(c.rolesChangedAt || '')];
+                 JSON.stringify(students), JSON.stringify(settings), String(c.rolesChangedAt || ''),
+                 JSON.stringify(roleMonths)];
 
     const sh = sheet_('Classes');
     const existing = rows_('Classes').find(r => r.classCode === code);
-    const prev = existing ? toClass_(existing) : { inspectors: [], tasks: [] };
+    const prev = existing ? toClass_(existing) : { tasks: [] };
     if (existing) {
       if (existing.teacherEmail !== email) fail_('이미 다른 선생님이 사용 중인 학급 코드입니다.', 'FORBIDDEN');
       sh.getRange(existing._row, 1, 1, row.length).setValues([row]);
     } else {
       sh.appendRow(row);
     }
-    const roles = rolesText_({ inspectors, tasks, students });
-    const before = rolesText_({ inspectors: prev.inspectors, tasks: prev.tasks, students });
-    if (roles.assignments !== before.assignments || roles.inspectors !== before.inspectors) {
-      sheet_('RoleHistory').appendRow([code, now, email, roles.inspectors, roles.assignments]);
+    const after = rolesText_(tasks, students);
+    if (after && after !== rolesText_(prev.tasks, students)) {
+      const month = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM');
+      sheet_('RoleHistory').appendRow([code, String(c.rolesMonth || month), now, email, after]);
     }
     return { cls: toClass_(rows_('Classes').find(r => r.classCode === code)) };
   },
@@ -127,6 +145,7 @@ const ACTIONS = {
     if (!c) fail_('학급 코드를 찾을 수 없습니다.', 'NOT_FOUND');
     const cls = toClass_(c);
     delete cls.teacherEmail;
+    delete cls.roleMonths;
     return { config: cls };
   },
 
@@ -146,11 +165,12 @@ const ACTIONS = {
     const now = new Date().toISOString();
     const rows = [];
     (req.records || []).forEach(r => {
-      if (!r.recordId || seen[r.recordId]) return;
+      const score = parseInt(r.score, 10);
+      if (!r.recordId || seen[r.recordId] || !SCALE_LABELS[score]) return;
       seen[r.recordId] = true;
-      rows.push([r.recordId, cls.classCode, cls.className, r.date, r.taskId, r.taskName, r.assignees || '',
-                 r.result, r.memo || '', st.classNo || '', String(st.number), st.name || '', r.inspectedAt || '', now,
-                 (r.assigneeNos || []).join(',')]);
+      rows.push([r.recordId, cls.classCode, cls.className, r.date, r.taskId, r.taskName,
+                 String(r.studentNo), r.studentName || '', String(score), SCALE_LABELS[score], r.memo || '',
+                 st.classNo || '', String(st.number), st.name || '', r.inspectedAt || '', now]);
     });
     if (rows.length) sh.getRange(sh.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
     return { accepted: rows.length, duplicates: (req.records || []).length - rows.length };
@@ -247,18 +267,23 @@ function findClass_(code) {
   return rows_('Classes').find(r => r.classCode === code);
 }
 
+function parseJson_(s, def) {
+  try { return s ? JSON.parse(s) : def; } catch (e) { return def; }
+}
+
 function toClass_(r) {
-  const settings = r.settingsJson ? JSON.parse(r.settingsJson) : {};
+  const settings = parseJson_(r.settingsJson, {});
   return {
     classCode: r.classCode,
     className: r.className,
     teacherEmail: r.teacherEmail,
-    students: r.studentsJson ? JSON.parse(r.studentsJson) : [],
+    students: parseJson_(r.studentsJson, []),
     inspectors: r.inspectors ? r.inspectors.split(',') : [],
-    tasks: r.tasksJson ? JSON.parse(r.tasksJson) : [],
+    tasks: parseJson_(r.tasksJson, []),
     evalTopN: settings.evalTopN || 3,
     evalMinChecks: settings.evalMinChecks == null ? 3 : settings.evalMinChecks,
     rolesChangedAt: r.rolesChangedAt || '',
+    roleMonths: parseJson_(r.roleMonthsJson, {}),
     updatedAt: r.updatedAt,
   };
 }
@@ -268,18 +293,14 @@ function clampInt_(v, min, max, def) {
   return isNaN(n) ? def : Math.min(max, Math.max(min, n));
 }
 
-// 역할 배정을 사람이 읽을 수 있는 글로 (RoleHistory 시트용)
-function rolesText_(c) {
+// 역할 배정을 사람이 읽을 수 있는 글로 (RoleHistory 시트용). 아무도 배정되지 않았으면 ''
+function rolesText_(tasks, students) {
   const nameOf = no => {
-    const s = (c.students || []).find(x => x.no === String(no));
+    const s = (students || []).find(x => x.no === String(no));
     return no + '번' + (s && s.name ? ' ' + s.name : '');
   };
-  return {
-    inspectors: (c.inspectors || []).map(nameOf).join(', '),
-    assignments: (c.tasks || []).map(t => t.name + ': ' + (t.assigneeNos || []).map(nameOf).join(', ')).join(' / '),
-  };
-}
-
-function classesOf_(email) {
-  return rows_('Classes').filter(r => r.teacherEmail === email).map(toClass_);
+  const parts = (tasks || [])
+    .filter(t => (t.assigneeNos || []).length)
+    .map(t => t.name + ': ' + t.assigneeNos.map(nameOf).join(', '));
+  return parts.join(' / ');
 }

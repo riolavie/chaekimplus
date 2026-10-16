@@ -13,6 +13,7 @@
   --good-soft: #e3f3ea;
   --mid-soft: #fbf1d9;
   --bad-soft: #fbe6e2;
+  --s5: #23794a; --s4: #6aa84f; --s3: #c9a227; --s2: #e07b39; --s1: #c8463a;
   --radius: 14px;
   --shadow: 0 1px 2px rgba(20, 30, 25, .06), 0 4px 16px rgba(20, 30, 25, .05);
   color-scheme: light;
@@ -34,12 +35,14 @@
     --good-soft: #1f3528;
     --mid-soft: #3a3020;
     --bad-soft: #3d2420;
+    --s5: #4fbf80; --s4: #93c96f; --s3: #e0bf4a; --s2: #ef9a5c; --s1: #ec6f60;
     --shadow: none;
     color-scheme: dark;
   }
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -172,14 +175,6 @@ input:focus, select:focus { outline: 2px solid var(--brand); outline-offset: -1p
 .task { padding: 14px 0; border-bottom: 1px solid var(--line); }
 .task-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
 .task .memo { margin-top: 8px; padding: 8px 10px; font-size: .9rem; }
-.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.seg button {
-  padding: 12px 0; font: inherit; font-weight: 700; cursor: pointer;
-  color: var(--muted); background: var(--bg); border: 2px solid var(--line); border-radius: 10px;
-}
-.seg button.good.on { background: var(--good); border-color: var(--good); color: #fff; }
-.seg button.mid.on { background: var(--mid); border-color: var(--mid); color: #fff; }
-.seg button.bad.on { background: var(--bad); border-color: var(--bad); color: #fff; }
 
 /* 교사 */
 .class-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
@@ -263,15 +258,6 @@ label.plain { font-weight: 400; }
 label.check { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 500; cursor: pointer; }
 label.check input { width: 20px; height: 20px; margin: 0; accent-color: var(--brand); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-.role-head, .role-row { display: grid; grid-template-columns: minmax(90px, 1fr) 2fr 52px; gap: 10px; align-items: center; }
-.role-head { font-size: .8rem; color: var(--muted); font-weight: 600; padding: 8px 8px 4px; border-bottom: 1px solid var(--line); }
-.role-head span:last-child { text-align: center; }
-.role-row { padding: 6px 8px; border-bottom: 1px solid var(--line); border-radius: 8px; }
-.role-row.changed { background: var(--mid-soft); }
-.role-row select { margin: 0; padding: 8px 10px; }
-.role-row .who { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.role-row .who b { display: inline-block; min-width: 1.6em; color: var(--muted); }
-.role-row label.check { justify-content: center; }
 .summary-line { margin: 12px 0 0; font-size: .9rem; color: var(--muted); }
 
 /* 월별 우수 학생 */
@@ -288,6 +274,72 @@ tr.dim td { color: var(--muted); }
 .chip { display: inline-block; padding: 2px 8px; margin: 2px 0; border-radius: 999px; background: var(--brand-soft); font-size: .85rem; white-space: nowrap; }
 .empty-inline { padding: 16px; text-align: center; color: var(--muted); background: var(--bg); border-radius: 10px; }
 
+
+/* 5단 척도 */
+.s5 { --c: var(--s5); } .s4 { --c: var(--s4); } .s3 { --c: var(--s3); } .s2 { --c: var(--s2); } .s1 { --c: var(--s1); }
+.pill[class*=" s"] { background: color-mix(in srgb, var(--c) 16%, transparent); color: var(--c); }
+.bar span[class^="s"], .legend i[class^="s"], .scale-legend i { background: var(--c); }
+.scale-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .8rem; color: var(--muted); margin: 4px 0 6px; }
+.scale-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; }
+.person { padding: 10px 0; border-top: 1px dashed var(--line); }
+.person-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.pname { font-weight: 600; }
+.link.sm { font-size: .85rem; }
+.scale { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.scale button {
+  display: flex; flex-direction: column; align-items: center; padding: 7px 0 5px; cursor: pointer; font: inherit;
+  color: var(--muted); background: var(--bg); border: 2px solid var(--line); border-radius: 10px;
+}
+.scale button b { font-size: 1.1rem; line-height: 1.2; }
+.scale button small { font-size: .7rem; white-space: nowrap; }
+.scale button.on { background: var(--c); border-color: var(--c); color: #fff; }
+.person .memo { margin-top: 8px; }
+.tag { font-size: .72rem; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: var(--brand-soft); color: var(--brand); vertical-align: middle; }
+
+/* 학반 세팅 단계 */
+.stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+.stepper button {
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 4px; cursor: pointer;
+  font: inherit; font-weight: 600; font-size: .88rem; color: var(--muted);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+}
+.stepper button span {
+  display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--line); color: var(--text); font-size: .8rem;
+}
+.stepper button.done span { background: var(--brand-soft); color: var(--brand); }
+.stepper button.on { color: var(--brand); border-color: var(--brand); }
+.stepper button.on span { background: var(--brand); color: var(--brand-ink); }
+.step-nav { display: flex; gap: 8px; align-items: center; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.step-nav .grow { flex: 1; }
+.role-def { display: grid; grid-template-columns: 1fr 72px 44px auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.role-def input { margin: 0; }
+.role-def.head { font-size: .8rem; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.role-def.head span:nth-child(3), .role-def label.check { justify-content: center; text-align: center; }
+.role-def .row-btns { display: flex; gap: 4px; }
+.warn-text { color: var(--mid); }
+.assign-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 10px; }
+.assign-top select { width: auto; display: inline-block; margin: 0; padding: 7px 10px; }
+.capacity { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.cap { font-size: .8rem; padding: 3px 9px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); }
+.cap.full { background: var(--good-soft); border-color: transparent; color: var(--good); }
+.cap.over { background: var(--bad-soft); border-color: transparent; color: var(--bad); }
+.assign-row { display: grid; grid-template-columns: minmax(90px, 1fr) 2fr 1.2fr; gap: 10px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); border-radius: 8px; }
+.assign-row.head { font-size: .8rem; color: var(--muted); font-weight: 600; }
+.assign-row.changed { background: var(--mid-soft); }
+.assign-row select { margin: 0; padding: 8px 10px; }
+.assign-row .who { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.assign-row .who b { display: inline-block; min-width: 1.6em; color: var(--muted); }
+.assign-row .prev { font-size: .82rem; color: var(--muted); }
+.assign-row .prev.dup { color: var(--bad); font-weight: 600; }
+
+/* 기록 */
+tr.click { cursor: pointer; }
+tr.click:hover td { background: var(--bg); }
+button.winner { font: inherit; color: inherit; cursor: pointer; }
+.memo-only { align-self: end; margin-bottom: 14px; }
+.filters { grid-template-columns: repeat(4, 1fr); }
+
 @media (max-width: 560px) {
   h1 { font-size: 1.35rem; }
   .hide-sm { display: none; }
@@ -297,5 +349,12 @@ tr.dim td { color: var(--muted); }
   .task-row .num { display: none; }
   .task-row input[data-k=name] { flex: 1 1 100%; }
   .page-head { align-items: flex-start; flex-direction: column; }
-  .role-head, .role-row { grid-template-columns: 1fr 1.6fr 40px; gap: 6px; }
+  .assign-row { grid-template-columns: 1fr 1.5fr; }
+  .assign-row .prev { grid-column: 2; margin-top: -4px; }
+  .assign-row.head span:last-child { display: none; }
+  .role-def { grid-template-columns: 1fr 64px 36px; }
+  .role-def .row-btns { grid-column: 1 / -1; justify-content: flex-end; }
+  .role-def.head span:last-child { display: none; }
+  .stepper button { font-size: .78rem; padding: 8px 2px; }
+  .scale button small { display: none; }
 }
