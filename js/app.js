@@ -26,9 +26,18 @@ function localDate(d = new Date()) {
 const fmtTime = ts => new Date(ts).toLocaleString('ko-KR',
   { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
+const monthLabel = ym => `${ym.slice(0, 4)}년 ${Number(ym.slice(5, 7))}월`;
+
 const resultClass = r => ({ [RESULTS[0]]: 'good', [RESULTS[1]]: 'mid', [RESULTS[2]]: 'bad' }[r] || '');
 
-const splitNames = s => String(s || '').split(/[,，、]/).map(x => x.trim()).filter(Boolean);
+// 양호 100 · 보통 50 · 미흡 0 (결과 단계 수에 맞춰 균등 배분)
+const resultScore = r => {
+  const i = RESULTS.indexOf(r);
+  return i < 0 ? null : ((RESULTS.length - 1 - i) / (RESULTS.length - 1)) * 100;
+};
+
+const byNo = (a, b) => Number(a) - Number(b);
+const clone = o => JSON.parse(JSON.stringify(o));
 
 function toast(msg, type = '') {
   const t = document.getElementById('toast');
@@ -69,6 +78,45 @@ function genCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const buf = crypto.getRandomValues(new Uint8Array(6));
   return Array.from(buf, b => chars[b % chars.length]).join('');
+}
+
+function downloadCsv(filename, head, rows) {
+  const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [head, ...rows].map(l => l.map(cell).join(','));
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ---------- 학급 데이터 헬퍼 ----------
+
+function normClass(c) {
+  c.students = (c.students || []).slice().sort((a, b) => byNo(a.no, b.no));
+  c.inspectors = (c.inspectors || []).map(String);
+  c.tasks = (c.tasks || []).map(t => ({ ...t, assigneeNos: (t.assigneeNos || []).map(String) }));
+  c.evalTopN = c.evalTopN || 3;
+  c.evalMinChecks = c.evalMinChecks ?? 3;
+  return c;
+}
+
+const studentName = (cls, no) => (cls.students.find(s => s.no === String(no)) || {}).name || '';
+const studentLabel = (cls, no) => `${no}번${studentName(cls, no) ? ' ' + studentName(cls, no) : ''}`;
+const assigneeText = (cls, t) => t.assigneeNos.slice().sort(byNo).map(no => studentLabel(cls, no)).join(', ');
+
+// "1 김하늘", "1번 김하늘", "1,김하늘", "1<TAB>김하늘"(엑셀 붙여넣기) 모두 허용
+function parseRoster(text) {
+  const out = [];
+  const bad = [];
+  text.split(/\r?\n/).forEach(line => {
+    if (!line.trim()) return;
+    const m = line.match(/^\s*(\d+)\s*번?[\s,.\t:)]*(.*?)\s*$/);
+    if (m) out.push({ no: String(Number(m[1])), name: m[2].trim() });
+    else bad.push(line.trim());
+  });
+  return { students: out, bad };
 }
 
 // ---------- 상단 사용자 / 전송 상태 ----------
@@ -165,7 +213,7 @@ function viewHome() {
         <span class="role-icon">🧹</span><b>학생</b><small>업무 검사하기</small>
       </button>
       <button class="role" id="goTeacher">
-        <span class="role-icon">📋</span><b>교사</b><small>학급 설정 · 검사 기록 확인</small>
+        <span class="role-icon">📋</span><b>교사</b><small>역할 배정 · 월별 우수 학생</small>
       </button>
     </div>
     ${CONFIG.API_URL ? '' : `<p class="notice warn">서버 주소가 아직 설정되지 않았습니다. <code>js/config.js</code>의 <code>API_URL</code>을 입력하세요.</p>`}`);
@@ -211,6 +259,12 @@ async function viewStudentLogin() {
         cfg = await DB.get('config:' + s.classCode);
         if (!cfg) return formError(f, '이 기기에서 처음 입장할 때는 인터넷 연결이 필요합니다. (학급 정보를 내려받아야 해요)');
       }
+      cfg = normClass(cfg);
+      if (cfg.students.length) {
+        const name = studentName(cfg, s.number);
+        if (!cfg.students.some(x => x.no === s.number)) return formError(f, `학급 명단에 ${s.number}번 학생이 없습니다. 번호를 확인해 주세요.`);
+        if (name && name.replace(/\s/g, '') !== s.name.replace(/\s/g, '')) return formError(f, `${s.number}번의 이름이 명단과 다릅니다. 번호와 이름을 확인해 주세요.`);
+      }
       state.student = s;
       state.teacher = null;
       await DB.del('teacherSession');
@@ -226,10 +280,11 @@ const historyKey = (code, number) => `history:${code}:${number}`;
 
 async function viewStudent() {
   const s = state.student;
-  const cfg = await DB.get('config:' + s.classCode);
-  if (!cfg) return viewStudentLogin();
-  const isInspector = cfg.inspectors.map(String).includes(s.number);
-  const myTasks = cfg.tasks.filter(t => splitNames(t.assignees).some(n => n === s.name || n === s.number || n === s.number + '번'));
+  const raw = await DB.get('config:' + s.classCode);
+  if (!raw) return viewStudentLogin();
+  const cfg = normClass(clone(raw));
+  const isInspector = cfg.inspectors.includes(s.number);
+  const myTasks = cfg.tasks.filter(t => t.assigneeNos.includes(s.number));
 
   const seq = render(`
     <section class="page-head">
@@ -238,17 +293,18 @@ async function viewStudent() {
         <h1>${isInspector ? '업무 검사' : '나의 업무'}</h1>
       </div>
     </section>
+    <section class="card my-role">
+      <div><span class="muted small">내 업무</span>
+        <b>${myTasks.length ? myTasks.map(t => esc(t.name)).join(', ') : '없음'}</b></div>
+      ${isInspector ? '<span class="status sent">검사 담당</span>' : ''}
+    </section>
     ${isInspector ? inspectFormHtml(cfg) : `
       <p class="notice">검사는 선생님이 지정한 검사 담당 학생만 할 수 있어요.</p>`}
-    <section class="card">
-      <h3>내 담당 업무</h3>
-      ${myTasks.length ? `<ul class="list">${myTasks.map(t => `<li><b>${esc(t.name)}</b><span class="muted">${esc(t.assignees)}</span></li>`).join('')}</ul>`
-        : '<p class="muted">지정된 업무가 없어요.</p>'}
-    </section>
     ${isInspector ? '<section class="card"><h3>이 기기의 검사 기록</h3><div id="history"></div></section>' : ''}
     <section class="card">
       <h3>학급 전체 업무</h3>
-      <ul class="list">${cfg.tasks.map(t => `<li><b>${esc(t.name)}</b><span class="muted">${esc(t.assignees)}</span></li>`).join('')}</ul>
+      <ul class="list">${cfg.tasks.map(t => `<li><b>${esc(t.name)}</b><span class="muted">${esc(assigneeText(cfg, t) || '미배정')}</span></li>`).join('')}</ul>
+      ${cfg.inspectors.length ? `<p class="muted small">검사 담당: ${esc(cfg.inspectors.slice().sort(byNo).map(n => studentLabel(cfg, n)).join(', '))}</p>` : ''}
     </section>`);
 
   if (isInspector) {
@@ -256,12 +312,12 @@ async function viewStudent() {
     renderHistory();
   }
 
-  // 온라인이면 학급 정보 최신화 (검사 입력 중이 아닐 때만 화면 갱신)
+  // 온라인이면 학급 정보(역할 배정 등) 최신화. 검사 입력 중이 아닐 때만 화면 갱신
   api('getClassConfig', { classCode: s.classCode }).then(async r => {
-    if (JSON.stringify(r.config) === JSON.stringify(cfg)) return;
+    if (JSON.stringify(r.config) === JSON.stringify(raw)) return;
     await DB.set('config:' + s.classCode, r.config);
     if (seq === viewSeq && !document.querySelector('.seg button.on')) {
-      toast('학급 정보가 업데이트되었습니다.');
+      toast('역할이나 학급 정보가 업데이트되었습니다.');
       viewStudent();
     }
   }).catch(() => {});
@@ -278,7 +334,7 @@ function inspectFormHtml(cfg) {
         <div class="task" data-id="${esc(t.id)}">
           <div class="task-head">
             <b>${esc(t.name)}</b>
-            ${t.assignees ? `<span class="muted small">담당: ${esc(t.assignees)}</span>` : ''}
+            <span class="muted small">담당: ${esc(assigneeText(cfg, t) || '미배정')}</span>
           </div>
           <div class="seg">${RESULTS.map(r => `<button type="button" class="${resultClass(r)}" data-r="${esc(r)}">${esc(r)}</button>`).join('')}</div>
           <input class="memo" placeholder="메모 (선택)" maxlength="200">
@@ -315,8 +371,10 @@ function bindInspectForm(cfg) {
       const on = el.querySelector('.seg .on');
       if (!on) return;
       const t = cfg.tasks.find(x => x.id === el.dataset.id);
+      // 검사 시점의 담당 학생을 함께 저장 → 나중에 역할이 바뀌어도 기록은 정확
       records.push({
-        recordId: uid(), date, taskId: t.id, taskName: t.name, assignees: t.assignees,
+        recordId: uid(), date, taskId: t.id, taskName: t.name,
+        assignees: assigneeText(cfg, t), assigneeNos: t.assigneeNos.slice().sort(byNo),
         result: on.dataset.r, memo: el.querySelector('.memo').value.trim(), inspectedAt: now,
       });
     });
@@ -432,7 +490,18 @@ async function loadClasses() {
   (await DB.outboxAll())
     .filter(o => o.action === 'saveClass' && o.email === email)
     .forEach(o => map.set(o.data.cls.classCode, { ...o.data.cls, pending: true }));
-  return [...map.values()];
+  return [...map.values()].map(c => normClass(clone(c)));
+}
+
+async function saveClassLocal(cls, label) {
+  const email = state.teacher.email;
+  const data = clone(cls);
+  delete data.pending;
+  const list = (await DB.get('classes:' + email)) || [];
+  const i = list.findIndex(c => c.classCode === data.classCode);
+  if (i >= 0) list[i] = data; else list.push(data);
+  await DB.set('classes:' + email, list);
+  await Sync.enqueue('saveClass', { cls: data }, { auth: 'teacher', email, label });
 }
 
 async function viewTeacherHome() {
@@ -449,17 +518,23 @@ async function viewTeacherHome() {
           ${c.pending ? '<span class="status wait">전송 대기</span>' : ''}
         </div>
         <p class="code-chip" title="학생 입장용 학급 코드">학급 코드 <b>${esc(c.classCode)}</b></p>
-        <p class="muted small">업무 ${c.tasks.length}개 · 검사 담당 ${c.inspectors.length ? c.inspectors.map(n => esc(n) + '번').join(', ') : '없음'}</p>
-        <div class="actions">
-          <button class="btn" data-records="${esc(c.classCode)}">검사 기록</button>
-          <button class="btn ghost" data-edit="${esc(c.classCode)}">학급 설정</button>
+        <p class="muted small">학생 ${c.students.length}명 · 업무 ${c.tasks.length}개 · 검사 담당 ${c.inspectors.length}명
+          ${c.rolesChangedAt ? `<br>최근 역할 변경 ${fmtTime(c.rolesChangedAt)}` : ''}</p>
+        <div class="card-actions">
+          <button class="btn primary" data-act="eval" data-code="${esc(c.classCode)}">🏆 월별 우수 학생</button>
+          <button class="btn" data-act="roles" data-code="${esc(c.classCode)}">역할 바꾸기</button>
+          <button class="btn" data-act="records" data-code="${esc(c.classCode)}">검사 기록</button>
+          <button class="btn ghost" data-act="edit" data-code="${esc(c.classCode)}">학급 설정</button>
         </div>
       </article>`).join('')}</div>`
       : `<section class="card empty"><p>아직 학급이 없습니다.</p><p class="muted">새 학급을 만들고 학생들에게 학급 코드를 알려주세요.</p></section>`}`);
 
   document.getElementById('newClass').onclick = () => viewClassEdit(null);
-  $app.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => viewClassEdit(classes.find(c => c.classCode === b.dataset.edit)));
-  $app.querySelectorAll('[data-records]').forEach(b => b.onclick = () => viewRecords(classes.find(c => c.classCode === b.dataset.records)));
+  $app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+    const c = classes.find(x => x.classCode === b.dataset.code);
+    ({ eval: () => viewRecords(c, 'eval'), records: () => viewRecords(c, 'list'),
+       roles: () => viewRoles(c), edit: () => viewClassEdit(c) })[b.dataset.act]();
+  });
 
   try {
     const r = await api('listClasses', { token: state.teacher.token });
@@ -471,15 +546,14 @@ async function viewTeacherHome() {
   }
 }
 
-// ---------- 교사: 학급 설정 ----------
+// ---------- 교사: 학급 설정 (이름 · 명단 · 업무 · 평가 기준) ----------
 
 function viewClassEdit(orig) {
   const isNew = !orig;
-  const cls = orig ? JSON.parse(JSON.stringify(orig)) : {
-    classCode: genCode(), className: '', inspectors: [],
-    tasks: [{ id: uid(), name: '', assignees: '' }],
-  };
-  delete cls.pending;
+  const cls = orig ? normClass(clone(orig)) : normClass({
+    classCode: genCode(), className: '', students: [], inspectors: [],
+    tasks: [{ id: uid(), name: '' }],
+  });
 
   render(`
     <section class="page-head">
@@ -491,20 +565,30 @@ function viewClassEdit(orig) {
         <span>학생 입장용 학급 코드</span>
         <b>${esc(cls.classCode)}</b>
       </div>
-      <label>검사 담당 학생 번호
-        <input name="inspectors" placeholder="예: 3, 15, 22" inputmode="numeric" value="${esc(cls.inspectors.join(', '))}">
-        <span class="hint">쉼표로 구분해 입력하세요. 이 번호의 학생만 검사 결과를 제출할 수 있습니다.</span>
+
+      <h3>학생 명단</h3>
+      <label class="plain">
+        <textarea name="roster" rows="8" placeholder="한 줄에 한 명씩: 번호 이름&#10;1 김하늘&#10;2 이바다&#10;3 박구름">${esc(cls.students.map(s => `${s.no} ${s.name}`).join('\n'))}</textarea>
+        <span class="hint">엑셀에서 번호·이름 두 열을 복사해 붙여넣어도 됩니다. 명단에 있는 학생만 입장할 수 있어요.</span>
       </label>
 
       <h3>업무 목록</h3>
-      <p class="hint">담당 학생은 이름 또는 번호를 쉼표로 구분해 입력하세요. (예: 김하늘, 이바다)</p>
+      <p class="hint">담당 학생과 검사 담당은 저장 후 <b>역할 바꾸기</b> 화면에서 정합니다.</p>
       <div id="tasks"></div>
       <button type="button" class="btn ghost block" id="addTask">+ 업무 추가</button>
+
+      <h3>월별 우수 학생 기준</h3>
+      <div class="row2 even">
+        <label>우수 학생 수<input name="evalTopN" type="number" min="1" max="30" value="${cls.evalTopN}">
+          <span class="hint">매달 상위 몇 명 (동점자는 모두 포함)</span></label>
+        <label>최소 검사 횟수<input name="evalMinChecks" type="number" min="0" max="100" value="${cls.evalMinChecks}">
+          <span class="hint">한 달에 이 횟수 이상 검사받은 학생만 선정</span></label>
+      </div>
 
       <p class="form-error" hidden></p>
       <div class="actions">
         <button type="button" class="btn ghost" id="cancel">취소</button>
-        <button class="btn primary">저장</button>
+        <button class="btn primary">${isNew ? '저장하고 역할 정하기' : '저장'}</button>
       </div>
     </form>`);
 
@@ -514,7 +598,6 @@ function viewClassEdit(orig) {
   function readTasks() {
     $tasks.querySelectorAll('.task-row').forEach((row, i) => {
       cls.tasks[i].name = row.querySelector('[data-k=name]').value;
-      cls.tasks[i].assignees = row.querySelector('[data-k=assignees]').value;
     });
   }
   function drawTasks() {
@@ -522,7 +605,6 @@ function viewClassEdit(orig) {
       <div class="task-row">
         <span class="num">${i + 1}</span>
         <input data-k="name" placeholder="업무 (예: 교실 바닥 쓸기)" value="${esc(t.name)}">
-        <input data-k="assignees" placeholder="담당 학생" value="${esc(t.assignees)}">
         <button type="button" class="icon-btn" data-up="${i}" title="위로" ${i ? '' : 'disabled'}>↑</button>
         <button type="button" class="icon-btn" data-rm="${i}" title="삭제">✕</button>
       </div>`).join('');
@@ -542,7 +624,7 @@ function viewClassEdit(orig) {
 
   f.querySelector('#addTask').onclick = () => {
     readTasks();
-    cls.tasks.push({ id: uid(), name: '', assignees: '' });
+    cls.tasks.push({ id: uid(), name: '', assigneeNos: [] });
     drawTasks();
     $tasks.querySelector('.task-row:last-child input').focus();
   };
@@ -552,71 +634,334 @@ function viewClassEdit(orig) {
     e.preventDefault();
     formError(f);
     readTasks();
-    cls.className = f.className.value.trim();
-    cls.inspectors = [...new Set(f.inspectors.value.split(/[^0-9]+/).filter(Boolean).map(n => String(Number(n))))];
-    cls.tasks = cls.tasks.filter(t => t.name.trim()).map(t => ({ ...t, name: t.name.trim(), assignees: t.assignees.trim() }));
-    if (!cls.tasks.length) return formError(f, '업무를 하나 이상 입력해 주세요.');
-    if (!cls.inspectors.length && !confirm('검사 담당 학생이 없으면 아무도 검사 결과를 제출할 수 없어요. 그래도 저장할까요?')) return;
+    const { students, bad } = parseRoster(f.roster.value);
+    if (bad.length) return formError(f, `명단에서 번호를 읽을 수 없는 줄이 있습니다: "${bad[0]}"`);
+    const dup = students.find((s, i) => students.findIndex(x => x.no === s.no) !== i);
+    if (dup) return formError(f, `명단에 ${dup.no}번이 두 번 있습니다.`);
+    const nos = new Set(students.map(s => s.no));
 
-    const email = state.teacher.email;
-    const list = (await DB.get('classes:' + email)) || [];
-    const i = list.findIndex(c => c.classCode === cls.classCode);
-    if (i >= 0) list[i] = cls; else list.push(cls);
-    await DB.set('classes:' + email, list);
-    await Sync.enqueue('saveClass', { cls }, { auth: 'teacher', email, label: `학급 설정: ${cls.className}` });
+    cls.className = f.className.value.trim();
+    cls.students = students.sort((a, b) => byNo(a.no, b.no));
+    cls.tasks = cls.tasks.filter(t => t.name.trim()).map(t => ({
+      ...t, name: t.name.trim(), assigneeNos: (t.assigneeNos || []).filter(no => nos.has(no)),
+    }));
+    cls.inspectors = cls.inspectors.filter(no => nos.has(no));
+    cls.evalTopN = Math.max(1, Number(f.evalTopN.value) || 3);
+    cls.evalMinChecks = Math.max(0, Number(f.evalMinChecks.value) || 0);
+    if (!cls.tasks.length) return formError(f, '업무를 하나 이상 입력해 주세요.');
+    if (!students.length) return formError(f, '학생 명단을 입력해 주세요.');
+
+    await saveClassLocal(cls, `학급 설정: ${cls.className}`);
     toast(navigator.onLine ? '저장했습니다.' : '저장했습니다. 와이파이 연결 시 서버에 반영됩니다.', 'ok');
+    if (isNew) viewRoles(cls); else viewTeacherHome();
+  };
+}
+
+// ---------- 교사: 역할 바꾸기 ----------
+
+function viewRoles(orig) {
+  const cls = normClass(clone(orig));
+  if (!cls.students.length) {
+    render(`
+      <section class="page-head"><div><p class="eyebrow">${esc(cls.className)}</p><h1>역할 바꾸기</h1></div></section>
+      <section class="card empty"><p>먼저 학생 명단을 입력해 주세요.</p>
+        <button class="btn primary" id="goEdit">학급 설정으로</button></section>`);
+    document.getElementById('goEdit').onclick = () => viewClassEdit(cls);
+    return;
+  }
+
+  // 학생 번호 → 업무 id (1인 1역)
+  const savedTask = {};
+  cls.tasks.forEach(t => t.assigneeNos.forEach(no => { if (!savedTask[no]) savedTask[no] = t.id; }));
+  const savedInsp = new Set(cls.inspectors);
+  let task = { ...savedTask };
+  let insp = new Set(savedInsp);
+  const order = cls.students.map(s => s.no);
+
+  render(`
+    <section class="page-head">
+      <div><p class="eyebrow">${esc(cls.className)}</p><h1>역할 바꾸기</h1></div>
+      <button class="btn ghost" id="back">← 학급 목록</button>
+    </section>
+    <section class="card">
+      <div class="toolbar">
+        <button class="btn" id="rotate">한 칸씩 돌리기 ↓</button>
+        <label class="check"><input type="checkbox" id="rotInsp" checked> 검사 담당도 함께</label>
+        <span class="grow"></span>
+        <button class="btn ghost sm" id="reset">되돌리기</button>
+      </div>
+      <p class="hint">한 칸씩 돌리기: 각 학생의 역할이 다음 번호 학생에게 넘어갑니다. (마지막 번호 → 첫 번호)
+        ${cls.rolesChangedAt ? `<br>최근 역할 변경: ${fmtTime(cls.rolesChangedAt)}` : ''}</p>
+      <div class="role-head"><span>학생</span><span>업무</span><span>검사</span></div>
+      <div id="rows"></div>
+      <p class="summary-line" id="summary"></p>
+      <div class="actions">
+        <button class="btn ghost" id="cancel">취소</button>
+        <button class="btn primary" id="save">역할 저장</button>
+      </div>
+    </section>
+    <section class="card">
+      <h3>업무별 배정 미리보기</h3>
+      <div id="byTask"></div>
+    </section>`);
+
+  const $rows = document.getElementById('rows');
+
+  function draw() {
+    $rows.innerHTML = cls.students.map(s => {
+      const changed = (task[s.no] || '') !== (savedTask[s.no] || '') || insp.has(s.no) !== savedInsp.has(s.no);
+      return `<div class="role-row ${changed ? 'changed' : ''}">
+        <span class="who"><b>${esc(s.no)}</b> ${esc(s.name)}</span>
+        <select data-no="${esc(s.no)}">
+          <option value="">— 없음 —</option>
+          ${cls.tasks.map(t => `<option value="${esc(t.id)}" ${task[s.no] === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+        </select>
+        <label class="check"><input type="checkbox" data-insp="${esc(s.no)}" ${insp.has(s.no) ? 'checked' : ''}><span class="sr">검사 담당</span></label>
+      </div>`;
+    }).join('');
+    $rows.querySelectorAll('select').forEach(sel => sel.onchange = () => { task[sel.dataset.no] = sel.value; draw(); });
+    $rows.querySelectorAll('[data-insp]').forEach(cb => cb.onchange = () => {
+      cb.checked ? insp.add(cb.dataset.insp) : insp.delete(cb.dataset.insp);
+      draw();
+    });
+
+    const changed = $rows.querySelectorAll('.changed').length;
+    const unassigned = order.filter(no => !task[no]).length;
+    document.getElementById('summary').innerHTML =
+      `변경 <b>${changed}</b>명 · 업무 없음 ${unassigned}명 · 검사 담당 ${insp.size}명`;
+    document.getElementById('byTask').innerHTML = `<ul class="list">${cls.tasks.map(t => {
+      const who = order.filter(no => task[no] === t.id);
+      return `<li><b>${esc(t.name)}</b><span class="${who.length ? '' : 'danger'}">${who.length ? esc(who.map(no => studentLabel(cls, no)).join(', ')) : '담당 없음'}</span></li>`;
+    }).join('')}<li><b>검사 담당</b><span>${esc([...insp].sort(byNo).map(no => studentLabel(cls, no)).join(', ') || '없음')}</span></li></ul>`;
+  }
+  draw();
+
+  document.getElementById('rotate').onclick = () => {
+    const n = order.length;
+    const next = {};
+    const nextInsp = new Set();
+    order.forEach((no, i) => {
+      const prev = order[(i - 1 + n) % n];
+      if (task[prev]) next[no] = task[prev];
+      if (insp.has(prev)) nextInsp.add(no);
+    });
+    task = next;
+    if (document.getElementById('rotInsp').checked) insp = nextInsp;
+    draw();
+    toast('한 칸씩 돌렸습니다. 확인 후 저장하세요.');
+  };
+  document.getElementById('reset').onclick = () => { task = { ...savedTask }; insp = new Set(savedInsp); draw(); };
+  document.getElementById('back').onclick = viewTeacherHome;
+  document.getElementById('cancel').onclick = viewTeacherHome;
+  document.getElementById('save').onclick = async () => {
+    if (!insp.size && !confirm('검사 담당 학생이 없으면 아무도 검사 결과를 제출할 수 없어요. 그래도 저장할까요?')) return;
+    cls.tasks.forEach(t => { t.assigneeNos = order.filter(no => task[no] === t.id); });
+    cls.inspectors = [...insp].sort(byNo);
+    cls.rolesChangedAt = new Date().toISOString();
+    await saveClassLocal(cls, `역할 변경: ${cls.className}`);
+    toast(navigator.onLine ? '역할을 저장했습니다. 학생 기기에는 다음 접속 때 반영됩니다.' : '저장했습니다. 와이파이 연결 시 서버에 반영됩니다.', 'ok');
     viewTeacherHome();
   };
 }
 
-// ---------- 교사: 검사 기록 ----------
+// ---------- 교사: 기록 (월별 우수 학생 / 검사 기록) ----------
 
-async function viewRecords(cls) {
+const recordNos = r => String(r.assigneeNos || '').split(',').map(s => s.trim()).filter(Boolean);
+
+// 한 달 동안 학생별 점수와 순위
+function monthlyRanking(records, cls, month) {
+  const map = new Map();
+  records.filter(r => r.date.startsWith(month)).forEach(r => {
+    const score = resultScore(r.result);
+    if (score == null) return;
+    recordNos(r).forEach(no => {
+      const m = map.get(no) || { no, cnt: {}, total: 0, sum: 0 };
+      m.cnt[r.result] = (m.cnt[r.result] || 0) + 1;
+      m.total++;
+      m.sum += score;
+      map.set(no, m);
+    });
+  });
+  const rows = [...map.values()].map(m => ({
+    ...m, name: studentName(cls, m.no), score: m.sum / m.total, eligible: m.total >= cls.evalMinChecks,
+  }));
+  const good = m => m.cnt[RESULTS[0]] || 0;
+  rows.sort((a, b) => (b.eligible - a.eligible) || (b.score - a.score) || (good(b) - good(a)) ||
+    (b.total - a.total) || byNo(a.no, b.no));
+  // 동점(점수·양호 수 같음)이면 같은 순위
+  let rank = 0;
+  rows.forEach((m, i) => {
+    const p = rows[i - 1];
+    if (!m.eligible) { m.rank = null; return; }
+    rank = p && p.eligible && p.score === m.score && good(p) === good(m) ? p.rank : i + 1;
+    m.rank = rank;
+  });
+  rows.forEach(m => { m.excellent = m.eligible && m.rank <= cls.evalTopN; });
+  return rows;
+}
+
+function stackBar(cnt, total) {
+  return `<div class="bar">${RESULTS.map(r => cnt[r]
+    ? `<span class="${resultClass(r)}" style="width:${(cnt[r] / total) * 100}%" title="${esc(r)} ${cnt[r]}"></span>` : '').join('')}</div>`;
+}
+
+async function viewRecords(cls, tab = 'eval') {
   const today = localDate();
-  const monthStart = today.slice(0, 8) + '01';
   const seq = render(`
     <section class="page-head">
-      <div><p class="eyebrow">${esc(cls.className)} · 학급 코드 ${esc(cls.classCode)}</p><h1>검사 기록</h1></div>
+      <div><p class="eyebrow">${esc(cls.className)} · 학급 코드 ${esc(cls.classCode)}</p>
+        <h1>${tab === 'eval' ? '월별 우수 학생' : '검사 기록'}</h1></div>
       <button class="btn ghost" id="back">← 학급 목록</button>
     </section>
-    <section class="card filters">
-      <label>시작일<input type="date" id="from" value="${monthStart}"></label>
-      <label>종료일<input type="date" id="to" value="${today}"></label>
-      <label>업무<select id="task"><option value="">전체</option>
-        ${cls.tasks.map(t => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}</select></label>
+    <nav class="tabs">
+      <button data-tab="eval" class="${tab === 'eval' ? 'on' : ''}">🏆 월별 우수 학생</button>
+      <button data-tab="list" class="${tab === 'list' ? 'on' : ''}">검사 기록</button>
+    </nav>
+    <section class="card filters" id="filters"></section>
+    <div id="out"></div>`);
+
+  document.getElementById('back').onclick = viewTeacherHome;
+  $app.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => viewRecords(cls, b.dataset.tab));
+
+  let cache = (await DB.get('records:' + cls.classCode)) || { records: [], fetchedAt: null };
+  const $f = document.getElementById('filters');
+  const info = () => (cache.fetchedAt
+    ? `${fmtTime(cache.fetchedAt)}에 받은 기록입니다. 원본은 구글 스프레드시트 'Records' 시트에 누적됩니다.`
+    : '아직 서버에서 기록을 받지 않았습니다. 인터넷 연결 후 새로고침을 눌러주세요.');
+
+  if (tab === 'eval') {
+    $f.innerHTML = `
+      <label>월<select id="month"></select></label>
       <div class="filter-actions">
         <button class="btn" id="refresh">새로고침</button>
         <button class="btn ghost" id="csv">CSV 저장</button>
       </div>
-      <p class="muted small" id="fetchInfo"></p>
-    </section>
-    <div id="out"></div>`);
-
-  document.getElementById('back').onclick = viewTeacherHome;
-  ['from', 'to', 'task'].forEach(id => { document.getElementById(id).onchange = draw; });
-  document.getElementById('csv').onclick = () => exportCsv(filtered(), cls);
+      <p class="muted small" id="fetchInfo"></p>`;
+  } else {
+    $f.innerHTML = `
+      <label>시작일<input type="date" id="from" value="${today.slice(0, 8)}01"></label>
+      <label>종료일<input type="date" id="to" value="${today}"></label>
+      <label>업무<select id="task"><option value="">전체</option>
+        ${cls.tasks.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select></label>
+      <div class="filter-actions">
+        <button class="btn" id="refresh">새로고침</button>
+        <button class="btn ghost" id="csv">CSV 저장</button>
+      </div>
+      <p class="muted small" id="fetchInfo"></p>`;
+  }
   const refreshBtn = document.getElementById('refresh');
   refreshBtn.onclick = () => busy(refreshBtn, fetchRecords);
 
-  let cache = (await DB.get('records:' + cls.classCode)) || { records: [], fetchedAt: null };
-
-  function filtered() {
-    const from = document.getElementById('from').value;
-    const to = document.getElementById('to').value;
-    const task = document.getElementById('task').value;
-    return cache.records
-      .filter(r => (!from || r.date >= from) && (!to || r.date <= to) && (!task || r.taskName === task))
-      .sort((a, b) => (b.date + b.inspectedAt).localeCompare(a.date + a.inspectedAt));
+  function fillMonths() {
+    const sel = document.getElementById('month');
+    const cur = sel.value;
+    const months = [...new Set([today.slice(0, 7), ...cache.records.map(r => r.date.slice(0, 7))])].sort().reverse();
+    sel.innerHTML = months.map(m => `<option value="${m}">${monthLabel(m)}</option>`).join('');
+    sel.value = months.includes(cur) ? cur : months[0];
   }
 
   function draw() {
-    document.getElementById('fetchInfo').textContent = cache.fetchedAt
-      ? `${fmtTime(cache.fetchedAt)}에 받은 기록입니다. 원본은 구글 스프레드시트 'Records' 시트에 누적됩니다.`
-      : '아직 서버에서 기록을 받지 않았습니다. 인터넷 연결 후 새로고침을 눌러주세요.';
-    const rows = filtered();
+    document.getElementById('fetchInfo').textContent = info();
+    if (tab === 'eval') drawEval(); else drawList();
+  }
+
+  // --- 월별 우수 학생
+  function drawEval() {
+    const month = document.getElementById('month').value;
+    const rows = monthlyRanking(cache.records, cls, month);
+    const winners = rows.filter(r => r.excellent);
+    const medal = r => (r === 1 ? '🥇' : r === 2 ? '🥈' : r === 3 ? '🥉' : `${r}위`);
+    const allMonths = [...new Set(cache.records.map(r => r.date.slice(0, 7)))].sort().reverse();
+    const monthly = allMonths.map(m => ({ m, w: monthlyRanking(cache.records, cls, m).filter(r => r.excellent) }));
+    const tally = new Map();
+    monthly.forEach(({ m, w }) => w.forEach(r => {
+      const t = tally.get(r.no) || { no: r.no, months: [] };
+      t.months.push(m);
+      tally.set(r.no, t);
+    }));
+    const tallyRows = [...tally.values()].sort((a, b) => b.months.length - a.months.length || byNo(a.no, b.no));
+
+    document.getElementById('out').innerHTML = `
+      <section class="card">
+        <h3>${monthLabel(month)} 우수 학생</h3>
+        <p class="hint">점수 = 검사 결과의 평균 (${RESULTS.map(r => `${esc(r)} ${resultScore(r)}점`).join(' · ')}).
+          한 달에 ${cls.evalMinChecks}회 이상 검사받은 학생 중 상위 ${cls.evalTopN}명 (동점자 포함). 기준은 학급 설정에서 바꿀 수 있어요.</p>
+        ${winners.length ? `<div class="winners">${winners.map(r => `
+          <div class="winner">
+            <span class="medal">${medal(r.rank)}</span>
+            <b>${esc(r.no)}번 ${esc(r.name)}</b>
+            <span class="score">${Math.round(r.score)}<small>점</small></span>
+            <span class="muted small">검사 ${r.total}회 · ${RESULTS.map(x => `${esc(x)} ${r.cnt[x] || 0}`).join(' · ')}</span>
+          </div>`).join('')}</div>`
+        : '<p class="empty-inline">이 달에는 기준을 충족한 학생이 아직 없습니다.</p>'}
+      </section>
+
+      <section class="card">
+        <h3>${monthLabel(month)} 전체 순위</h3>
+        ${rows.length ? `<div class="legend">${RESULTS.map(r => `<span><i class="${resultClass(r)}"></i>${esc(r)}</span>`).join('')}</div>
+        <div class="table-wrap"><table class="summary">
+          <thead><tr><th>순위</th><th>학생</th><th class="num">검사</th>${RESULTS.map(r => `<th class="num">${esc(r)}</th>`).join('')}<th class="num">점수</th><th class="bar-col">비율</th></tr></thead>
+          <tbody>${rows.map(r => `<tr class="${r.excellent ? 'hl' : ''} ${r.eligible ? '' : 'dim'}">
+            <td class="nowrap">${r.eligible ? (r.excellent ? medal(r.rank) : r.rank + '위') : '<span class="small">횟수 부족</span>'}</td>
+            <td class="nowrap">${esc(r.no)}번 ${esc(r.name)}</td>
+            <td class="num">${r.total}</td>
+            ${RESULTS.map(x => `<td class="num">${r.cnt[x] || 0}</td>`).join('')}
+            <td class="num"><b>${Math.round(r.score)}</b></td>
+            <td class="bar-col">${stackBar(r.cnt, r.total)}</td></tr>`).join('')}</tbody>
+        </table></div>` : '<p class="muted">이 달의 검사 기록이 없습니다.</p>'}
+      </section>
+
+      <section class="card">
+        <h3>월별 우수 학생 누적</h3>
+        ${monthly.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>월</th><th>우수 학생</th></tr></thead>
+          <tbody>${monthly.map(({ m, w }) => `<tr><td class="nowrap">${monthLabel(m)}</td>
+            <td>${w.length ? w.map(r => `<span class="chip">${medal(r.rank)} ${esc(r.no)}번 ${esc(r.name)}</span>`).join(' ') : '<span class="muted">해당 없음</span>'}</td></tr>`).join('')}</tbody>
+        </table></div>
+        ${tallyRows.length ? `<h4>우수 학생 선정 횟수</h4>
+        <div class="table-wrap"><table>
+          <thead><tr><th>학생</th><th class="num">횟수</th><th>선정된 달</th></tr></thead>
+          <tbody>${tallyRows.map(t => `<tr><td class="nowrap">${esc(studentLabel(cls, t.no))}</td><td class="num"><b>${t.months.length}</b></td>
+            <td class="small">${t.months.map(m => `${Number(m.slice(5))}월`).join(', ')}</td></tr>`).join('')}</tbody>
+        </table></div>` : ''}`
+        : '<p class="muted">아직 기록이 없습니다.</p>'}
+      </section>`;
+
+    document.getElementById('csv').onclick = () => downloadCsv(
+      `${cls.className}_${month}_월별평가.csv`,
+      ['순위', '우수', '번호', '이름', '검사 횟수', ...RESULTS, '점수'],
+      rows.map(r => [r.eligible ? r.rank : '횟수 부족', r.excellent ? '우수' : '', r.no, r.name, r.total,
+        ...RESULTS.map(x => r.cnt[x] || 0), Math.round(r.score * 10) / 10]));
+  }
+
+  // --- 상세 검사 기록
+  function drawList() {
+    const from = document.getElementById('from').value;
+    const to = document.getElementById('to').value;
+    const taskId = document.getElementById('task').value;
+    const rows = cache.records
+      .filter(r => (!from || r.date >= from) && (!to || r.date <= to) && (!taskId || r.taskId === taskId))
+      .sort((a, b) => (b.date + b.inspectedAt).localeCompare(a.date + a.inspectedAt));
+
+    const byTask = new Map();
+    rows.forEach(r => {
+      const m = byTask.get(r.taskName) || { cnt: {}, total: 0 };
+      m.cnt[r.result] = (m.cnt[r.result] || 0) + 1;
+      m.total++;
+      byTask.set(r.taskName, m);
+    });
+
     document.getElementById('out').innerHTML = rows.length ? `
-      ${summaryHtml(rows)}
-      ${personHtml(rows)}
+      <section class="card">
+        <h3>업무별 요약</h3>
+        <div class="legend">${RESULTS.map(r => `<span><i class="${resultClass(r)}"></i>${esc(r)}</span>`).join('')}</div>
+        <div class="table-wrap"><table class="summary">
+          <thead><tr><th>업무</th>${RESULTS.map(r => `<th class="num">${esc(r)}</th>`).join('')}<th class="bar-col">비율</th></tr></thead>
+          <tbody>${[...byTask].map(([name, m]) => `<tr>
+            <td>${esc(name)}</td>${RESULTS.map(r => `<td class="num">${m.cnt[r] || 0}</td>`).join('')}
+            <td class="bar-col">${stackBar(m.cnt, m.total)}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </section>
       <section class="card">
         <h3>상세 기록 <span class="muted small">${rows.length}건</span></h3>
         <div class="table-wrap"><table>
@@ -629,6 +974,12 @@ async function viewRecords(cls) {
         </table></div>
         ${rows.length > 300 ? '<p class="muted small">최근 300건만 표시합니다. 전체는 CSV로 저장하세요.</p>' : ''}
       </section>` : '<section class="card empty"><p>해당 기간의 검사 기록이 없습니다.</p></section>';
+
+    document.getElementById('csv').onclick = () => downloadCsv(
+      `${cls.className}_검사기록_${localDate()}.csv`,
+      ['날짜', '업무', '담당', '결과', '메모', '검사자 반', '검사자 번호', '검사자 이름', '검사 시각'],
+      rows.map(r => [r.date, r.taskName, r.assignees, r.result, r.memo,
+        r.inspectorClass, r.inspectorNo, r.inspectorName, r.inspectedAt]));
   }
 
   async function fetchRecords() {
@@ -636,75 +987,19 @@ async function viewRecords(cls) {
       const r = await api('getRecords', { token: state.teacher.token, classCode: cls.classCode });
       cache = { records: r.records, fetchedAt: Date.now() };
       await DB.set('records:' + cls.classCode, cache);
-      if (seq === viewSeq) draw();
+      if (seq !== viewSeq) return;
+      if (tab === 'eval') fillMonths();
+      draw();
     } catch (e) {
       if (e.code === 'AUTH') Sync.onAuthNeeded();
       else if (seq === viewSeq) toast(isNetErr(e) ? '오프라인입니다. 저장된 기록을 보여드립니다.' : e.message, 'warn');
     }
   }
 
+  if (tab === 'eval') fillMonths();
+  $f.querySelectorAll('select, input').forEach(el => { el.onchange = draw; });
   draw();
   fetchRecords();
-}
-
-function stackBar(cnt, total) {
-  return `<div class="bar">${RESULTS.map(r => cnt[r]
-    ? `<span class="${resultClass(r)}" style="width:${(cnt[r] / total) * 100}%" title="${esc(r)} ${cnt[r]}"></span>` : '').join('')}</div>`;
-}
-
-function summaryHtml(rows) {
-  const byTask = new Map();
-  rows.forEach(r => {
-    const m = byTask.get(r.taskName) || { cnt: {}, total: 0 };
-    m.cnt[r.result] = (m.cnt[r.result] || 0) + 1;
-    m.total++;
-    byTask.set(r.taskName, m);
-  });
-  return `<section class="card">
-    <h3>업무별 요약</h3>
-    <div class="legend">${RESULTS.map(r => `<span><i class="${resultClass(r)}"></i>${esc(r)}</span>`).join('')}</div>
-    <div class="table-wrap"><table class="summary">
-      <thead><tr><th>업무</th>${RESULTS.map(r => `<th class="num">${esc(r)}</th>`).join('')}<th class="bar-col">비율</th></tr></thead>
-      <tbody>${[...byTask].map(([name, m]) => `<tr>
-        <td>${esc(name)}</td>${RESULTS.map(r => `<td class="num">${m.cnt[r] || 0}</td>`).join('')}
-        <td class="bar-col">${stackBar(m.cnt, m.total)}</td></tr>`).join('')}</tbody>
-    </table></div>
-  </section>`;
-}
-
-function personHtml(rows) {
-  const byPerson = new Map();
-  rows.forEach(r => splitNames(r.assignees).forEach(n => {
-    const m = byPerson.get(n) || { cnt: {}, total: 0 };
-    m.cnt[r.result] = (m.cnt[r.result] || 0) + 1;
-    m.total++;
-    byPerson.set(n, m);
-  }));
-  if (!byPerson.size) return '';
-  const bad = RESULTS[RESULTS.length - 1];
-  const list = [...byPerson].sort((a, b) => (b[1].cnt[bad] || 0) - (a[1].cnt[bad] || 0) || a[0].localeCompare(b[0], 'ko'));
-  return `<section class="card">
-    <h3>학생별 누적 <span class="muted small">${esc(bad)} 많은 순</span></h3>
-    <div class="table-wrap"><table class="summary">
-      <thead><tr><th>학생</th>${RESULTS.map(r => `<th class="num">${esc(r)}</th>`).join('')}<th class="bar-col">비율</th></tr></thead>
-      <tbody>${list.map(([name, m]) => `<tr>
-        <td>${esc(name)}</td>${RESULTS.map(r => `<td class="num">${m.cnt[r] || 0}</td>`).join('')}
-        <td class="bar-col">${stackBar(m.cnt, m.total)}</td></tr>`).join('')}</tbody>
-    </table></div>
-  </section>`;
-}
-
-function exportCsv(rows, cls) {
-  const head = ['날짜', '업무', '담당', '결과', '메모', '검사자 반', '검사자 번호', '검사자 이름', '검사 시각'];
-  const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [head, ...rows.map(r => [r.date, r.taskName, r.assignees, r.result, r.memo,
-    r.inspectorClass, r.inspectorNo, r.inspectorName, r.inspectedAt])].map(l => l.map(cell).join(','));
-  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `${cls.className}_검사기록_${localDate()}.csv`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 // ---------- 시작 ----------

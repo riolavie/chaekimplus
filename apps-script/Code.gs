@@ -17,9 +17,12 @@ const SESSION_DAYS = 30;
 const SHEETS = {
   Teachers: ['email', 'name', 'salt', 'hash', 'createdAt'],
   Sessions: ['token', 'email', 'expiresAt'],
-  Classes: ['classCode', 'className', 'teacherEmail', 'inspectors', 'tasksJson', 'updatedAt'],
+  Classes: ['classCode', 'className', 'teacherEmail', 'inspectors', 'tasksJson', 'updatedAt',
+            'studentsJson', 'settingsJson', 'rolesChangedAt'],
   Records: ['recordId', 'classCode', 'className', 'date', 'taskId', 'taskName', 'assignees', 'result', 'memo',
-            'inspectorClass', 'inspectorNo', 'inspectorName', 'inspectedAt', 'receivedAt'],
+            'inspectorClass', 'inspectorNo', 'inspectorName', 'inspectedAt', 'receivedAt', 'assigneeNos'],
+  // 역할(업무 담당·검사 담당)이 바뀔 때마다 한 줄씩 기록
+  RoleHistory: ['classCode', 'changedAt', 'teacherEmail', 'inspectors', 'assignments'],
 };
 
 function setup() {
@@ -87,19 +90,34 @@ const ACTIONS = {
     if (!/^[A-Z0-9]{4,10}$/.test(code)) fail_('학급 코드 형식이 올바르지 않습니다.', 'BAD');
     const className = String(c.className || '').trim();
     if (!className) fail_('학급 이름을 입력해 주세요.', 'BAD');
+    const students = (c.students || [])
+      .map(s => ({ no: String(parseInt(s.no, 10)), name: String(s.name || '').trim() }))
+      .filter(s => s.no !== 'NaN');
     const tasks = (c.tasks || [])
       .filter(t => t && String(t.name || '').trim())
-      .map(t => ({ id: String(t.id), name: String(t.name).trim(), assignees: String(t.assignees || '').trim() }));
-    const inspectors = (c.inspectors || []).map(String).filter(Boolean).join(',');
-    const row = [code, className, email, inspectors, JSON.stringify(tasks), new Date().toISOString()];
+      .map(t => ({ id: String(t.id), name: String(t.name).trim(), assigneeNos: (t.assigneeNos || []).map(String) }));
+    const inspectors = (c.inspectors || []).map(String).filter(Boolean);
+    const settings = {
+      evalTopN: clampInt_(c.evalTopN, 1, 30, 3),
+      evalMinChecks: clampInt_(c.evalMinChecks, 0, 100, 3),
+    };
+    const now = new Date().toISOString();
+    const row = [code, className, email, inspectors.join(','), JSON.stringify(tasks), now,
+                 JSON.stringify(students), JSON.stringify(settings), String(c.rolesChangedAt || '')];
 
     const sh = sheet_('Classes');
     const existing = rows_('Classes').find(r => r.classCode === code);
+    const prev = existing ? toClass_(existing) : { inspectors: [], tasks: [] };
     if (existing) {
       if (existing.teacherEmail !== email) fail_('이미 다른 선생님이 사용 중인 학급 코드입니다.', 'FORBIDDEN');
       sh.getRange(existing._row, 1, 1, row.length).setValues([row]);
     } else {
       sh.appendRow(row);
+    }
+    const roles = rolesText_({ inspectors, tasks, students });
+    const before = rolesText_({ inspectors: prev.inspectors, tasks: prev.tasks, students });
+    if (roles.assignments !== before.assignments || roles.inspectors !== before.inspectors) {
+      sheet_('RoleHistory').appendRow([code, now, email, roles.inspectors, roles.assignments]);
     }
     return { cls: toClass_(rows_('Classes').find(r => r.classCode === code)) };
   },
@@ -131,7 +149,8 @@ const ACTIONS = {
       if (!r.recordId || seen[r.recordId]) return;
       seen[r.recordId] = true;
       rows.push([r.recordId, cls.classCode, cls.className, r.date, r.taskId, r.taskName, r.assignees || '',
-                 r.result, r.memo || '', st.classNo || '', String(st.number), st.name || '', r.inspectedAt || '', now]);
+                 r.result, r.memo || '', st.classNo || '', String(st.number), st.name || '', r.inspectedAt || '', now,
+                 (r.assigneeNos || []).join(',')]);
     });
     if (rows.length) sh.getRange(sh.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
     return { accepted: rows.length, duplicates: (req.records || []).length - rows.length };
@@ -169,6 +188,10 @@ function sheet_(name) {
     sh.getRange(1, 1, sh.getMaxRows(), SHEETS[name].length).setNumberFormat('@');
     sh.getRange(1, 1, 1, SHEETS[name].length).setValues([SHEETS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);
+  } else if (sh.getLastColumn() < SHEETS[name].length) {
+    // 앱 업데이트로 열이 추가된 경우 머리글을 보충
+    sh.getRange(1, 1, sh.getMaxRows(), SHEETS[name].length).setNumberFormat('@');
+    sh.getRange(1, 1, 1, SHEETS[name].length).setValues([SHEETS[name]]).setFontWeight('bold');
   }
   return sh;
 }
@@ -225,13 +248,35 @@ function findClass_(code) {
 }
 
 function toClass_(r) {
+  const settings = r.settingsJson ? JSON.parse(r.settingsJson) : {};
   return {
     classCode: r.classCode,
     className: r.className,
     teacherEmail: r.teacherEmail,
+    students: r.studentsJson ? JSON.parse(r.studentsJson) : [],
     inspectors: r.inspectors ? r.inspectors.split(',') : [],
     tasks: r.tasksJson ? JSON.parse(r.tasksJson) : [],
+    evalTopN: settings.evalTopN || 3,
+    evalMinChecks: settings.evalMinChecks == null ? 3 : settings.evalMinChecks,
+    rolesChangedAt: r.rolesChangedAt || '',
     updatedAt: r.updatedAt,
+  };
+}
+
+function clampInt_(v, min, max, def) {
+  const n = parseInt(v, 10);
+  return isNaN(n) ? def : Math.min(max, Math.max(min, n));
+}
+
+// 역할 배정을 사람이 읽을 수 있는 글로 (RoleHistory 시트용)
+function rolesText_(c) {
+  const nameOf = no => {
+    const s = (c.students || []).find(x => x.no === String(no));
+    return no + '번' + (s && s.name ? ' ' + s.name : '');
+  };
+  return {
+    inspectors: (c.inspectors || []).map(nameOf).join(', '),
+    assignments: (c.tasks || []).map(t => t.name + ': ' + (t.assigneeNos || []).map(nameOf).join(', ')).join(' / '),
   };
 }
 
