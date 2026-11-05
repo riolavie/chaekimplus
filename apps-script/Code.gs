@@ -24,7 +24,12 @@ const SHEETS = {
             'score', 'scoreLabel', 'memo', 'inspectorClass', 'inspectorNo', 'inspectorName', 'inspectedAt', 'receivedAt'],
   // 역할이 바뀔 때마다 한 줄씩 기록
   RoleHistory: ['classCode', 'month', 'changedAt', 'teacherEmail', 'assignments'],
+  // 비밀번호 찾기 인증 코드 (해시로만 저장)
+  Resets: ['email', 'codeHash', 'expiresAt', 'attempts', 'sentAt'],
 };
+
+const RESET_MINUTES = 15;   // 인증 코드 유효 시간
+const RESET_MAX_TRIES = 5;  // 코드 입력 허용 횟수
 
 const SCALE_LABELS = { 5: '매우 잘함', 4: '잘함', 3: '보통', 2: '아쉬움', 1: '노력 필요' };
 
@@ -36,6 +41,18 @@ function setup() {
   }
   Object.keys(SHEETS).forEach(sheet_);
   Logger.log('데이터 저장 위치: ' + ss_().getUrl());
+  Logger.log('메일 발송 가능 수(오늘 남은 양): ' + MailApp.getRemainingDailyQuota());
+}
+
+/**
+ * 관리자용: 메일을 받을 수 없는 선생님의 비밀번호를 직접 초기화합니다.
+ * Apps Script 편집기에서 아래 함수의 이메일·새 비밀번호를 바꾼 뒤 resetPasswordByAdmin 을 실행하세요.
+ */
+function resetPasswordByAdmin() {
+  const email = 'teacher@school.kr';   // ← 선생님 아이디
+  const newPassword = 'change-me-123'; // ← 새 비밀번호 (6자 이상)
+  setPassword_(normEmail_(email), newPassword);
+  Logger.log(email + ' 의 비밀번호를 초기화했습니다. 선생님께 새 비밀번호를 알려주고, 로그인 후 바꾸도록 안내하세요.');
 }
 
 function ss_() {
@@ -93,6 +110,54 @@ const ACTIONS = {
     const email = normEmail_(req.email);
     const t = findTeacher_(email);
     if (!t || hash_(req.password, t.salt) !== t.hash) fail_('아이디 또는 비밀번호가 올바르지 않습니다.', 'BAD');
+    return { email, name: t.name, token: newSession_(email), classes: classesOf_(email) };
+  },
+
+  // 비밀번호 찾기 1단계: 가입된 이메일이면 6자리 인증 코드를 메일로 보냄
+  requestReset(req) {
+    const email = normEmail_(req.email);
+    const done = { message: '가입된 아이디라면 인증 코드를 메일로 보냈습니다. 메일함(스팸함 포함)을 확인해 주세요.' };
+    const t = findTeacher_(email);
+    if (!t) return done; // 가입 여부를 드러내지 않음
+    const prev = rows_('Resets').find(r => r.email === email);
+    if (prev && Date.now() - new Date(prev.sentAt).getTime() < 60 * 1000) {
+      fail_('인증 코드를 방금 보냈습니다. 1분 뒤에 다시 요청해 주세요.', 'BAD');
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const now = new Date();
+    const row = [email, hash_(code, email), new Date(now.getTime() + RESET_MINUTES * 60000).toISOString(), '0', now.toISOString()];
+    const sh = sheet_('Resets');
+    if (prev) sh.getRange(prev._row, 1, 1, row.length).setValues([row]);
+    else sh.appendRow(row);
+    MailApp.sendEmail({
+      to: email,
+      subject: '[책임플러스] 비밀번호 재설정 인증 코드',
+      body: t.name + ' 선생님, 안녕하세요.\n\n비밀번호 재설정 인증 코드: ' + code +
+            '\n\n이 코드는 ' + RESET_MINUTES + '분 동안 유효합니다.\n직접 요청하지 않으셨다면 이 메일을 무시하세요.',
+    });
+    return done;
+  },
+
+  // 비밀번호 찾기 2단계: 코드 확인 후 새 비밀번호 저장, 바로 로그인
+  resetPassword(req) {
+    const email = normEmail_(req.email);
+    const invalid = '인증 코드가 올바르지 않거나 만료되었습니다. 코드를 다시 요청해 주세요.';
+    const r = rows_('Resets').find(x => x.email === email);
+    if (!r || !r.codeHash || r.expiresAt < new Date().toISOString()) fail_(invalid, 'BAD');
+    const tries = Number(r.attempts || 0) + 1;
+    const sh = sheet_('Resets');
+    if (tries > RESET_MAX_TRIES) {
+      sh.getRange(r._row, 2).setValue('');
+      fail_('입력 횟수를 넘었습니다. 인증 코드를 다시 요청해 주세요.', 'BAD');
+    }
+    if (hash_(String(req.code || '').trim(), email) !== r.codeHash) {
+      sh.getRange(r._row, 4).setValue(String(tries));
+      fail_('인증 코드가 올바르지 않습니다. (남은 시도 ' + (RESET_MAX_TRIES - tries) + '회)', 'BAD');
+    }
+    if (String(req.password || '').length < 6) fail_('비밀번호는 6자 이상이어야 합니다.', 'BAD');
+    sh.getRange(r._row, 2).setValue(''); // 코드는 한 번만 사용
+    setPassword_(email, req.password);
+    const t = findTeacher_(email);
     return { email, name: t.name, token: newSession_(email), classes: classesOf_(email) };
   },
 
@@ -259,6 +324,22 @@ function hash_(password, salt) {
 
 function findTeacher_(email) {
   return rows_('Teachers').find(r => r.email === email);
+}
+
+// 비밀번호를 바꾸고, 기존 로그인(다른 기기 포함)은 모두 만료
+function setPassword_(email, password) {
+  if (String(password || '').length < 6) fail_('비밀번호는 6자 이상이어야 합니다.', 'BAD');
+  const t = findTeacher_(email);
+  if (!t) fail_('가입되지 않은 아이디입니다: ' + email, 'NOT_FOUND');
+  const salt = Utilities.getUuid();
+  sheet_('Teachers').getRange(t._row, 3, 1, 2).setValues([[salt, hash_(password, salt)]]);
+  const sessions = sheet_('Sessions');
+  rows_('Sessions').filter(s => s.email === email).reverse()
+    .forEach(s => sessions.getRange(s._row, 3).setValue('1970-01-01T00:00:00.000Z'));
+}
+
+function classesOf_(email) {
+  return rows_('Classes').filter(r => r.teacherEmail === email).map(toClass_);
 }
 
 function newSession_(email) {

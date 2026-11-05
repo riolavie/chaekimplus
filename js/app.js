@@ -550,11 +550,13 @@ function viewTeacherLogin(signup = false) {
         <button type="button" class="link" id="back">← 처음으로</button>
         <button type="button" class="link" id="toggle">${signup ? '로그인으로' : '처음이신가요? 회원가입'}</button>
       </div>
-      ${signup ? '' : '<p class="muted small">이 기기에서 한 번 로그인한 계정은 인터넷이 없어도 로그인할 수 있어요.</p>'}
+      ${signup ? '' : `<p class="center"><button type="button" class="link sm" id="forgot">비밀번호를 잊으셨나요?</button></p>
+        <p class="muted small">이 기기에서 한 번 로그인한 계정은 인터넷이 없어도 로그인할 수 있어요.</p>`}
     </form>`);
   const f = document.getElementById('f');
   f.querySelector('#back').onclick = viewHome;
   f.querySelector('#toggle').onclick = () => viewTeacherLogin(!signup);
+  if (!signup) f.querySelector('#forgot').onclick = () => viewForgot(f.email.value.trim());
   f.onsubmit = e => {
     e.preventDefault();
     busy(f.querySelector('.primary'), async () => {
@@ -571,10 +573,89 @@ function viewTeacherLogin(signup = false) {
         if (signup || !isNetErr(err)) return formError(f, err.message);
         return offlineLogin(f, email, password);
       }
-      const salt = uid();
-      await DB.set('teacherAuth:' + email, { email, name: r.name, token: r.token, salt, verifier: await pbkdf2(password, salt) });
-      await DB.set('classes:' + email, r.classes);
-      await startTeacher({ email, name: r.name, token: r.token });
+      await finishOnlineLogin(email, password, r);
+    });
+  };
+}
+
+// 온라인 로그인 성공: 오프라인 로그인용 확인값을 이 기기에 저장
+async function finishOnlineLogin(email, password, r) {
+  const salt = uid();
+  await DB.set('teacherAuth:' + email, { email, name: r.name, token: r.token, salt, verifier: await pbkdf2(password, salt) });
+  await DB.set('classes:' + email, r.classes);
+  await startTeacher({ email, name: r.name, token: r.token });
+}
+
+// 비밀번호 찾기: ① 아이디(이메일)로 인증 코드 받기 → ② 코드 + 새 비밀번호
+function viewForgot(prefill = '') {
+  render(`
+    <form class="card narrow" id="f1">
+      <h2>비밀번호 찾기</h2>
+      <p class="muted small">가입한 아이디(이메일)로 6자리 인증 코드를 보내드립니다. 인터넷 연결이 필요합니다.</p>
+      <label>아이디 (이메일)<input name="email" type="email" required autocomplete="username" value="${esc(prefill)}"></label>
+      <p class="form-error" hidden></p>
+      <button class="btn primary block">인증 코드 받기</button>
+      <div class="split">
+        <button type="button" class="link" id="back">← 로그인으로</button>
+        <button type="button" class="link" id="haveCode">이미 코드를 받았어요</button>
+      </div>
+    </form>
+    <form class="card narrow" id="f2" hidden>
+      <h2>새 비밀번호 설정</h2>
+      <p class="notice small" id="sentMsg"></p>
+      <label>인증 코드<input name="code" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="6자리 숫자" autocomplete="one-time-code" class="code-input"></label>
+      <label>새 비밀번호<input name="password" type="password" required minlength="6" autocomplete="new-password"></label>
+      <label>새 비밀번호 확인<input name="password2" type="password" required minlength="6" autocomplete="new-password"></label>
+      <p class="form-error" hidden></p>
+      <button class="btn primary block">비밀번호 바꾸고 로그인</button>
+      <div class="split">
+        <button type="button" class="link" id="back2">← 로그인으로</button>
+        <button type="button" class="link" id="resend">코드 다시 받기</button>
+      </div>
+      <p class="muted small">메일이 오지 않으면 스팸함을 확인하거나, 앱을 설치한 관리자에게 비밀번호 초기화를 요청하세요.</p>
+    </form>`);
+  const f1 = document.getElementById('f1');
+  const f2 = document.getElementById('f2');
+  let email = prefill.toLowerCase();
+  const showStep2 = msg => {
+    email = f1.email.value.trim().toLowerCase();
+    document.getElementById('sentMsg').textContent = msg || `${email} 로 받은 인증 코드를 입력하세요.`;
+    f1.hidden = true;
+    f2.hidden = false;
+    f2.code.focus();
+  };
+  f1.querySelector('#back').onclick = () => viewTeacherLogin();
+  f2.querySelector('#back2').onclick = () => viewTeacherLogin();
+  f1.querySelector('#haveCode').onclick = () => {
+    if (!f1.email.reportValidity()) return;
+    showStep2();
+  };
+  f2.querySelector('#resend').onclick = () => { f1.hidden = false; f2.hidden = true; };
+  f1.onsubmit = e => {
+    e.preventDefault();
+    busy(f1.querySelector('.primary'), async () => {
+      formError(f1);
+      try {
+        const r = await api('requestReset', { email: f1.email.value.trim().toLowerCase() });
+        showStep2(r.message);
+      } catch (err) {
+        formError(f1, err.message);
+      }
+    });
+  };
+  f2.onsubmit = e => {
+    e.preventDefault();
+    busy(f2.querySelector('.primary'), async () => {
+      formError(f2);
+      const password = f2.password.value;
+      if (password !== f2.password2.value) return formError(f2, '비밀번호가 서로 다릅니다.');
+      try {
+        const r = await api('resetPassword', { email, code: f2.code.value.trim(), password });
+        toast('비밀번호를 바꿨습니다.', 'ok');
+        await finishOnlineLogin(email, password, r);
+      } catch (err) {
+        formError(f2, err.message);
+      }
     });
   };
 }
