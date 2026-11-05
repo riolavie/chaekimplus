@@ -22,7 +22,9 @@ async function api(action, data = {}) {
       signal: ctrl.signal,
     });
   } catch (e) {
-    throw new ApiError('인터넷에 연결할 수 없습니다.', 'NETWORK');
+    throw new ApiError(navigator.onLine
+      ? '서버에 연결할 수 없습니다. 서버 주소와 배포 설정(액세스 권한: 모든 사용자)을 확인해 주세요.'
+      : '인터넷에 연결할 수 없습니다.', 'NETWORK');
   } finally {
     clearTimeout(timer);
   }

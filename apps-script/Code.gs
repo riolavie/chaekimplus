@@ -29,7 +29,21 @@ const SHEETS = {
 const SCALE_LABELS = { 5: '매우 잘함', 4: '잘함', 3: '보통', 2: '아쉬움', 1: '노력 필요' };
 
 function setup() {
+  // 스프레드시트에서 연 Apps Script가 아니라 따로 만든 프로젝트라면, 저장용 스프레드시트를 새로 만듭니다.
+  if (!SpreadsheetApp.getActiveSpreadsheet() && !PropertiesService.getScriptProperties().getProperty('SHEET_ID')) {
+    const ss = SpreadsheetApp.create('책임플러스 DB');
+    PropertiesService.getScriptProperties().setProperty('SHEET_ID', ss.getId());
+  }
   Object.keys(SHEETS).forEach(sheet_);
+  Logger.log('데이터 저장 위치: ' + ss_().getUrl());
+}
+
+function ss_() {
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (active) return active;
+  const id = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!id) fail_('저장할 스프레드시트가 없습니다. Apps Script에서 setup 함수를 한 번 실행해 주세요.', 'SERVER');
+  return SpreadsheetApp.openById(id);
 }
 
 function doGet() {
@@ -200,7 +214,7 @@ function fail_(msg, code) {
 }
 
 function sheet_(name) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = ss_();
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);

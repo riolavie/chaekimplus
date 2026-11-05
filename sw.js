@@ -1,5 +1,5 @@
 // 앱 파일을 수정하면 버전을 올려주세요. (예: v2) 그래야 학생 기기에도 새 버전이 적용됩니다.
-const CACHE = 'chaekim-plus-v5';
+const CACHE = 'chaekim-plus-v6';
 const ASSETS = [
   './',
   'index.html',

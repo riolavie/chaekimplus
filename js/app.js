@@ -269,6 +269,28 @@ Sync.onAuthNeeded = () => {
   toast('선생님 로그인이 필요합니다. 다시 로그인하면 남은 항목이 전송됩니다.', 'warn');
 };
 
+// ---------- 서버 연결 확인 ----------
+
+async function checkServer() {
+  const lines = [`앱 버전 캐시: ${(await caches.keys().catch(() => [])).join(', ') || '없음'}`,
+    `서버 주소: ${CONFIG.API_URL || '(비어 있음)'}`, `인터넷: ${navigator.onLine ? '연결됨' : '끊김'}`];
+  let verdict;
+  try {
+    const r = await api('ping');
+    verdict = `<p class="notice">✅ 서버와 정상적으로 연결됩니다. (서버 시각 ${esc(r.time)})</p>`;
+  } catch (e) {
+    lines.push(`오류: ${e.message} [${e.code}]`);
+    verdict = `<p class="notice warn">❌ 서버에 연결하지 못했습니다.</p>
+      <ul class="small">
+        <li>서버 주소를 브라우저에서 직접 열었을 때 <code>{"ok":true,...}</code>가 나오는지 확인하세요.</li>
+        <li>Apps Script 배포 설정의 <b>액세스 권한</b>이 "Google 계정이 있는 모든 사용자"가 아니라 <b>"모든 사용자"</b>여야 합니다.</li>
+        <li>코드를 바꾼 뒤에는 <b>배포 관리 → 수정 → 버전: 새 버전</b>으로 다시 배포해야 합니다.</li>
+        <li>"알 수 없는 요청" 오류라면 Apps Script에 최신 <code>Code.gs</code>를 붙여넣었는지 확인하세요.</li>
+      </ul>`;
+  }
+  openDialog(`<h3>서버 연결 확인</h3>${verdict}<pre class="diag">${esc(lines.join('\n'))}</pre>`);
+}
+
 // ---------- 첫 화면 ----------
 
 function viewHome() {
@@ -286,7 +308,9 @@ function viewHome() {
         <span class="role-icon">📋</span><b>교사</b><small>학반 세팅 · 월별 우수 학생</small>
       </button>
     </div>
-    ${CONFIG.API_URL ? '' : `<p class="notice warn">서버 주소가 아직 설정되지 않았습니다. <code>js/config.js</code>의 <code>API_URL</code>을 입력하세요.</p>`}`);
+    ${CONFIG.API_URL ? '' : `<p class="notice warn">서버 주소가 아직 설정되지 않았습니다. <code>js/config.js</code>의 <code>API_URL</code>을 입력하세요.</p>`}
+    <p class="center"><button class="link sm" id="checkServer">서버 연결 확인</button></p>`);
+  document.getElementById('checkServer').onclick = checkServer;
   document.getElementById('goStudent').onclick = viewStudentLogin;
   document.getElementById('goTeacher').onclick = () => viewTeacherLogin();
 }
@@ -1028,7 +1052,8 @@ async function viewRecords(cls, tab = 'eval') {
     const cur = sel.value;
     const months = [...new Set([today.slice(0, 7), ...cache.records.map(r => r.date.slice(0, 7))])].sort().reverse();
     sel.innerHTML = months.map(m => `<option value="${m}">${monthLabel(m)}</option>`).join('');
-    sel.value = months.includes(cur) ? cur : months[0];
+    const withData = months.find(m => cache.records.some(r => r.date.startsWith(m)));
+    sel.value = months.includes(cur) ? cur : withData || months[0];
   }
 
   function draw() {
@@ -1188,6 +1213,12 @@ async function viewRecords(cls, tab = 'eval') {
 async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
+    // 새 버전이 설치되면 한 번 새로고침해서 바로 적용
+    let reloaded = false;
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController && !reloaded) { reloaded = true; location.reload(); }
+    });
   }
   window.addEventListener('online', () => { renderSync(); Sync.run(); });
   window.addEventListener('offline', renderSync);

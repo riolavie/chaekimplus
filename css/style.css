@@ -348,6 +348,8 @@ button.winner { font: inherit; color: inherit; cursor: pointer; }
 .memo-only { align-self: end; margin-bottom: 14px; }
 .filters { grid-template-columns: repeat(4, 1fr); }
 
+.diag { white-space: pre-wrap; word-break: break-all; font-size: .78rem; background: var(--bg); padding: 10px; border-radius: 8px; }
+
 @media (max-width: 560px) {
   h1 { font-size: 1.35rem; }
   .hide-sm { display: none; }
