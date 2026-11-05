@@ -1053,7 +1053,8 @@ async function viewRecords(cls, tab = 'eval') {
     const months = [...new Set([today.slice(0, 7), ...cache.records.map(r => r.date.slice(0, 7))])].sort().reverse();
     sel.innerHTML = months.map(m => `<option value="${m}">${monthLabel(m)}</option>`).join('');
     const withData = months.find(m => cache.records.some(r => r.date.startsWith(m)));
-    sel.value = months.includes(cur) ? cur : withData || months[0];
+    const curHasData = cache.records.some(r => r.date.startsWith(cur));
+    sel.value = months.includes(cur) && curHasData ? cur : withData || months[0];
   }
 
   function draw() {
