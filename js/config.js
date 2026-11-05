@@ -1,7 +1,7 @@
 window.CONFIG = {
   // Google Apps Script 웹 앱 배포 URL (README.md 참고)
   // 예: 'https://script.google.com/macros/s/AKfycb.../exec'
-  API_URL: 'https://script.google.com/macros/s/AKfycbwWyEDXrxi0ORdPJdYRzbZaVJKHFp2GzDUHI5IToMnJKVZOAOADn1x2Ed3o5hCIJFFNQA/exec',
+  API_URL: 'https://script.google.com/macros/s/AKfycbz-TG5noNslSDKl-hFgppnVyGwRhQuOoTp4uwGmgcKKmCbSrzHPImeyBYOZCD_pMHnKnQ/exec',
 
   // 개인별 평가 척도 (높은 점수부터). 문구를 바꾸면 apps-script/Code.gs 의 SCALE_LABELS 도 같이 바꿔주세요.
   SCALE: [
