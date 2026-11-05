@@ -1,5 +1,5 @@
 /**
- * 학급 업무 검사 - Google Apps Script 서버
+ * 책임플러스 - Google Apps Script 서버
  *
  * 설치 방법은 README.md 를 참고하세요.
  * 1) 구글 스프레드시트 > 확장 프로그램 > Apps Script 에 이 코드를 붙여넣기
@@ -33,7 +33,7 @@ function setup() {
 }
 
 function doGet() {
-  return out_({ ok: true, app: 'class-check', time: new Date().toISOString() });
+  return out_({ ok: true, app: 'chaekim-plus', time: new Date().toISOString() });
 }
 
 function doPost(e) {

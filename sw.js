@@ -1,5 +1,5 @@
 // 앱 파일을 수정하면 버전을 올려주세요. (예: v2) 그래야 학생 기기에도 새 버전이 적용됩니다.
-const CACHE = 'class-check-v3';
+const CACHE = 'chaekim-plus-v4';
 const ASSETS = [
   './',
   'index.html',
@@ -9,9 +9,13 @@ const ASSETS = [
   'js/api.js',
   'js/app.js',
   'manifest.webmanifest',
-  'icons/icon.svg',
+  'icons/favicon.png',
+  'icons/mark.png',
+  'icons/logo.png',
+  'icons/apple-touch-icon.png',
   'icons/icon-192.png',
   'icons/icon-512.png',
+  'icons/icon-maskable-512.png',
 ];
 
 self.addEventListener('install', e => {

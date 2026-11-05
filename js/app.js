@@ -274,6 +274,7 @@ Sync.onAuthNeeded = () => {
 function viewHome() {
   render(`
     <section class="hero">
+      <img class="hero-logo" src="icons/logo.png" alt="책임플러스" width="220" height="214">
       <h1>누구로 사용하나요?</h1>
       <p class="muted">인터넷이 없어도 검사할 수 있어요. 와이파이가 연결되면 선생님께 자동으로 전송됩니다.</p>
     </section>
