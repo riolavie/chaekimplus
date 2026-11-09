@@ -1,7 +1,7 @@
 'use strict';
 
 // 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
-const APP_VERSION = 'v10 (2026.11.09)';
+const APP_VERSION = 'v11 (2026.11.09)';
 
 const SCALE = CONFIG.SCALE; // 높은 점수부터
 const MAX_SCORE = Math.max(...SCALE.map(s => s.value));
@@ -60,6 +60,7 @@ function toast(msg, type = '') {
 
 function render(html) {
   viewSeq++;
+  $app.className = 'wrap';
   $app.innerHTML = html;
   window.scrollTo(0, 0);
   return viewSeq;
@@ -847,47 +848,187 @@ async function saveClassLocal(cls, label) {
   await Sync.enqueue('saveClass', { cls: data }, { auth: 'teacher', email, label });
 }
 
-async function viewTeacherHome() {
+// 학급 카드에 보여줄 이번 달 요약 (이번 달 기록이 없으면 기록이 있는 최근 달)
+function classSummary(cls, records) {
+  const thisMonth = localDate().slice(0, 7);
+  const months = [...new Set(records.map(r => r.date.slice(0, 7)))].sort();
+  const month = records.some(r => r.date.startsWith(thisMonth)) ? thisMonth : months.pop() || thisMonth;
+  const rs = records.filter(r => r.date.startsWith(month));
+  const avg = rs.length ? rs.reduce((a, r) => a + Number(r.score), 0) / rs.length : null;
+  const ranking = monthlyRanking(records, cls, month);
+  return {
+    month, count: rs.length, avg,
+    rated: new Set(rs.map(r => r.studentNo)).size,
+    lastDate: records.reduce((m, r) => (r.date > m ? r.date : m), ''),
+    winners: ranking.filter(r => r.excellent).slice(0, 3),
+  };
+}
+
+async function viewTeacherHome(refresh = true) {
   const classes = await loadClasses();
-  const seq = render(`
-    <section class="page-head">
-      <div><p class="eyebrow">교사</p><h1>내 학급</h1></div>
-      <button class="btn primary" id="newClass">+ 학반 초기 세팅</button>
-    </section>
-    ${classes.length ? `<div class="class-grid">${classes.map(c => `
+  const recs = {};
+  for (const c of classes) recs[c.classCode] = ((await DB.get('records:' + c.classCode)) || {}).records || [];
+  const pending = (await DB.outboxAll()).length;
+  const thisMonth = localDate().slice(0, 7);
+  const sums = Object.fromEntries(classes.map(c => [c.classCode, classSummary(c, recs[c.classCode])]));
+  const totalStudents = classes.reduce((a, c) => a + c.students.length, 0);
+  const monthCount = classes.reduce((a, c) => a + recs[c.classCode].filter(r => r.date.startsWith(thisMonth)).length, 0);
+  const today = new Date().toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long' });
+  const medal = r => (r === 1 ? '🥇' : r === 2 ? '🥈' : r === 3 ? '🥉' : `${r}위`);
+  const memos = classes.flatMap(c => recs[c.classCode].filter(r => r.memo).map(r => ({ ...r, cls: c })))
+    .sort((a, b) => (b.date + b.inspectedAt).localeCompare(a.date + a.inspectedAt)).slice(0, 6);
+  const appLink = apiUrl() && apiUrl() !== CONFIG.API_URL ? shareLink(apiUrl()) : `${location.origin}${location.pathname}`;
+
+  const classCard = c => {
+    const m = sums[c.classCode];
+    const label = m.month === thisMonth ? '이번 달' : `${Number(m.month.slice(5))}월`;
+    return `
       <article class="card class-card">
         <div class="class-top">
-          <h3>${esc(c.className)}</h3>
-          ${c.pending ? '<span class="status wait">전송 대기</span>' : ''}
+          <div>
+            <h3>${esc(c.className)}</h3>
+            <p class="muted small">${c.rolesChangedAt ? `최근 역할 배정 ${fmtTime(c.rolesChangedAt)}` : '아직 역할을 배정하지 않았어요'}
+              ${m.lastDate ? ` · 최근 평가 ${esc(m.lastDate.slice(5).replace('-', '/'))}` : ''}</p>
+          </div>
+          <div class="class-code">
+            ${c.pending ? '<span class="status wait">전송 대기</span>' : ''}
+            <span class="code-chip" title="학생 입장용 학급 코드">학급 코드 <b>${esc(c.classCode)}</b></span>
+          </div>
         </div>
-        <p class="code-chip" title="학생 입장용 학급 코드">학급 코드 <b>${esc(c.classCode)}</b></p>
-        <p class="muted small">학생 ${c.students.length}명 · 역할 ${c.tasks.length}개 · 검사 담당 ${c.inspectors.length}명
-          ${c.rolesChangedAt ? `<br>최근 역할 배정 ${fmtTime(c.rolesChangedAt)}` : ''}</p>
-        <div class="card-actions">
+        <div class="tiles">
+          <div class="tile"><span>학생</span><b>${c.students.length}<small>명</small></b></div>
+          <div class="tile"><span>역할 · 검사 담당</span><b>${c.tasks.length}<small>개</small> · ${c.inspectors.length}<small>명</small></b></div>
+          <div class="tile"><span>${label} 평가</span><b>${m.count}<small>건</small></b></div>
+          <div class="tile"><span>${label} 평균 점수</span><b>${m.avg == null ? '–' : m.avg.toFixed(2)}<small>/ ${MAX_SCORE}</small></b></div>
+        </div>
+        <div class="mini-winners">
+          <span class="muted small">${label} 우수 학생</span>
+          ${m.winners.length ? m.winners.map(w => `<span class="chip">${medal(w.rank)} ${esc(w.no)}번 ${esc(w.name)} <small>${w.avg.toFixed(2)}</small></span>`).join('')
+            : `<span class="muted small">— ${m.count ? `최소 ${c.evalMinChecks}회 평가받은 학생이 아직 없어요` : '아직 평가 기록이 없어요'}</span>`}
+        </div>
+        <div class="card-actions four">
           <button class="btn primary" data-act="eval" data-code="${esc(c.classCode)}">🏆 월별 우수 학생</button>
-          <button class="btn" data-act="assign" data-code="${esc(c.classCode)}">역할 배정</button>
-          <button class="btn" data-act="records" data-code="${esc(c.classCode)}">평가 기록</button>
-          <button class="btn ghost" data-act="setup" data-code="${esc(c.classCode)}">학반 설정</button>
+          <button class="btn" data-act="assign" data-code="${esc(c.classCode)}">🎲 역할 배정</button>
+          <button class="btn" data-act="records" data-code="${esc(c.classCode)}">📝 평가 기록 · 메모</button>
+          <button class="btn ghost" data-act="setup" data-code="${esc(c.classCode)}">⚙️ 학반 설정</button>
         </div>
-      </article>`).join('')}</div>`
-      : `<section class="card empty"><p>아직 학급이 없습니다.</p>
-          <p class="muted">학반 초기 세팅에서 학생 명단 → 역할 → 배정 순서로 학급을 만들어 보세요.</p>
-          <button class="btn primary" id="newClass2">학반 초기 세팅 시작</button></section>`}`);
+      </article>`;
+  };
+
+  const seq = render(`
+    <section class="welcome">
+      <div>
+        <p class="eyebrow">${esc(today)}</p>
+        <h1>${esc(state.teacher.name)} 선생님, 안녕하세요 👋</h1>
+        <div class="welcome-stats">
+          <span>학급 <b>${classes.length}</b></span>
+          <span>학생 <b>${totalStudents}</b>명</span>
+          <span>이번 달 평가 <b>${monthCount}</b>건</span>
+          <span>${pending ? `전송 대기 <b>${pending}</b>건` : '모두 전송됨'}</span>
+        </div>
+      </div>
+      <button class="btn primary" id="newClass">+ 학반 초기 세팅</button>
+    </section>
+
+    <div class="dash">
+      <div class="dash-main">
+        <h2 class="section-title">내 학급</h2>
+        ${classes.length ? classes.map(classCard).join('') : `
+          <section class="card onboarding">
+            <h3>첫 학급을 만들어 볼까요?</h3>
+            <p class="muted">학반 초기 세팅에서 4단계로 학급을 준비합니다. 5분이면 충분해요.</p>
+            <ol class="steps">
+              <li><b>학생 명단</b><span>번호와 이름을 붙여넣기 (엑셀·나이스 복사 가능)</span></li>
+              <li><b>학급 역할</b><span>역할 이름과 인원, 검사 역할 지정</span></li>
+              <li><b>학생별 배정</b><span>🎲 랜덤 배정 또는 직접 선택</span></li>
+              <li><b>평가 기준</b><span>월별 우수 학생 수와 최소 평가 횟수</span></li>
+            </ol>
+            <button class="btn primary" id="newClass2">학반 초기 세팅 시작</button>
+          </section>`}
+        ${classes.length ? `
+        <h2 class="section-title">최근 평가 메모</h2>
+        <section class="card">
+          ${memos.length ? `<ul class="memo-feed">${memos.map(r => `
+            <li data-memo="${esc(r.cls.classCode)}">
+              <div class="memo-meta">
+                <b>${esc(r.studentNo)}번 ${esc(r.studentName)}</b>
+                ${scorePill(r.score)}
+                <span class="muted small">${esc(r.date.slice(5).replace('-', '/'))} · ${esc(r.taskName)}${classes.length > 1 ? ` · ${esc(r.cls.className)}` : ''} · 평가 ${esc(r.inspectorNo)}번</span>
+              </div>
+              <p>${esc(r.memo)}</p>
+            </li>`).join('')}</ul>
+            <p class="muted small">메모 전체는 각 학급의 <b>평가 기록 · 메모</b>에서 볼 수 있어요.</p>`
+          : '<p class="muted">아직 메모가 없습니다. 검사 담당 학생이 평가할 때 남긴 메모가 여기에 모입니다.</p>'}
+        </section>` : ''}
+      </div>
+
+      <aside class="dash-side">
+        <section class="card">
+          <h3>학생 입장 안내</h3>
+          <p class="muted small">학생에게 아래 앱 주소와 학급 코드를 알려주세요. 처음 한 번만 인터넷이 필요합니다.</p>
+          <div class="share-row"><input id="appLink" readonly value="${esc(appLink)}"><button class="btn sm" id="copyLink">복사</button></div>
+          ${classes.length ? `<ul class="list compact">${classes.map(c => `<li><span>${esc(c.className)}</span><b class="mono">${esc(c.classCode)}</b></li>`).join('')}</ul>` : ''}
+        </section>
+
+        <section class="card">
+          <h3>이렇게 사용해요</h3>
+          <ol class="steps compact">
+            <li><b>학반 초기 세팅</b><span>명단 → 역할 → 배정 → 평가 기준</span></li>
+            <li><b>학생 입장</b><span>앱 주소 + 학급 코드 안내</span></li>
+            <li><b>매일 평가</b><span>검사 담당 학생이 친구들을 5단계로 평가 (와이파이 없어도 OK)</span></li>
+            <li><b>월말 정리</b><span>🏆 월별 우수 학생 확인 → 🎲 다음 달 역할 랜덤 배정</span></li>
+          </ol>
+        </section>
+
+        <section class="card">
+          <h3>서버 · 앱 정보</h3>
+          <ul class="list compact">
+            <li><span>서버</span><b id="serverState" class="muted">확인 중…</b></li>
+            <li><span>앱 버전</span><b>${esc(APP_VERSION)}</b></li>
+          </ul>
+          <div class="actions left">
+            <button class="btn sm ghost" id="goServer">⚙️ 서버 연결</button>
+            <button class="btn sm ghost" id="forceUpdate">최신 버전으로 업데이트</button>
+          </div>
+        </section>
+      </aside>
+    </div>`);
+  $app.classList.add('wide');
 
   document.getElementById('newClass').onclick = () => viewSetup(null);
   const n2 = document.getElementById('newClass2');
   if (n2) n2.onclick = () => viewSetup(null);
+  document.getElementById('goServer').onclick = () => viewServer();
+  document.getElementById('forceUpdate').onclick = forceUpdate;
+  document.getElementById('copyLink').onclick = async () => {
+    try { await navigator.clipboard.writeText(document.getElementById('appLink').value); toast('앱 주소를 복사했습니다.', 'ok'); }
+    catch (e) { toast('복사하지 못했습니다. 직접 선택해 복사해 주세요.', 'warn'); }
+  };
   $app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
     const c = classes.find(x => x.classCode === b.dataset.code);
     ({ eval: () => viewRecords(c, 'eval'), records: () => viewRecords(c, 'list'),
        assign: () => viewSetup(c, 3), setup: () => viewSetup(c, 1) })[b.dataset.act]();
   });
+  $app.querySelectorAll('[data-memo]').forEach(li => li.onclick = () =>
+    viewRecords(classes.find(x => x.classCode === li.dataset.memo), 'list'));
 
+  api('ping').then(() => '✅ 연결됨', e => (isNetErr(e) && !navigator.onLine ? '오프라인' : '❌ 연결 안 됨'))
+    .then(t => { const el = document.getElementById('serverState'); if (el && seq === viewSeq) el.textContent = t; });
+
+  if (!refresh) return;
   try {
     const r = await api('listClasses', { token: state.teacher.token });
     const before = JSON.stringify((await DB.get('classes:' + state.teacher.email)) || []);
     await DB.set('classes:' + state.teacher.email, r.classes);
-    if (seq === viewSeq && before !== JSON.stringify(r.classes)) viewTeacherHome();
+    let changed = before !== JSON.stringify(r.classes);
+    // 학급별 평가 기록을 받아 요약을 최신으로
+    for (const c of r.classes) {
+      const got = await api('getRecords', { token: state.teacher.token, classCode: c.classCode });
+      const old = ((await DB.get('records:' + c.classCode)) || {}).records || [];
+      await DB.set('records:' + c.classCode, { records: got.records, fetchedAt: Date.now() });
+      if (got.records.length !== old.length) changed = true;
+    }
+    if (seq === viewSeq && changed) viewTeacherHome(false);
   } catch (e) {
     if (e.code === 'AUTH') Sync.onAuthNeeded();
   }

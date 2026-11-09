@@ -364,6 +364,57 @@ a.btn { text-decoration: none; }
 .share-row { display: flex; gap: 8px; }
 .share-row input { margin: 0; font-size: .8rem; }
 
+/* 교사 첫 화면 (대시보드) */
+.wrap.wide { max-width: 1180px; }
+.welcome {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 22px 24px; margin-bottom: 20px; border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--brand-soft), color-mix(in srgb, var(--plus) 12%, var(--surface)));
+  border: 1px solid var(--line);
+}
+.welcome h1 { margin: 2px 0 10px; }
+.welcome-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.welcome-stats span { padding: 4px 12px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); font-size: .88rem; color: var(--muted); }
+.welcome-stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+.dash { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+.section-title { font-size: 1.1rem; margin: 0 0 12px; }
+.dash-side .card { padding: 16px; }
+.dash-side h3 { font-size: 1rem; }
+.class-card .class-top h3 { margin-bottom: 2px; font-size: 1.2rem; }
+.class-card .class-top .muted { margin: 0; }
+.class-code { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.class-code .code-chip { margin: 0; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0 12px; }
+.tile { padding: 12px 14px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+.tile span { display: block; font-size: .78rem; color: var(--muted); margin-bottom: 2px; }
+.tile b { font-size: 1.45rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tile small { font-size: .8rem; font-weight: 500; color: var(--muted); margin-left: 2px; }
+.mini-winners { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 10px 0 2px; border-top: 1px dashed var(--line); }
+.mini-winners > .muted:first-child { margin-right: 4px; font-weight: 600; }
+.mini-winners .chip small { color: var(--muted); margin-left: 2px; }
+.card-actions.four { grid-template-columns: repeat(4, 1fr); margin-top: 14px; }
+.list.compact li { padding: 7px 0; font-size: .9rem; }
+.mono { letter-spacing: .12em; font-variant-numeric: tabular-nums; }
+.steps.compact { margin: 6px 0 0; }
+.steps.compact li { margin-bottom: 10px; }
+.steps.compact li > span { font-size: .84rem; }
+.onboarding .steps { margin: 14px 0 18px; }
+.share-row .btn.sm { flex: none; }
+
+.dash-main .section-title:not(:first-child) { margin-top: 24px; }
+.memo-feed { list-style: none; margin: 0 0 8px; padding: 0; }
+.memo-feed li { padding: 10px 8px; border-bottom: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.memo-feed li:hover { background: var(--bg); }
+.memo-feed li:last-child { border-bottom: 0; }
+.memo-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.memo-feed p { margin: 4px 0 0; }
+
+@media (max-width: 920px) {
+  .dash { grid-template-columns: 1fr; }
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .card-actions.four { grid-template-columns: 1fr 1fr; }
+}
+
 @media (max-width: 560px) {
   h1 { font-size: 1.35rem; }
   .hide-sm { display: none; }
@@ -373,6 +424,10 @@ a.btn { text-decoration: none; }
   .task-row .num { display: none; }
   .task-row input[data-k=name] { flex: 1 1 100%; }
   .page-head { align-items: flex-start; flex-direction: column; }
+  .welcome { padding: 18px; }
+  .welcome .btn { width: 100%; }
+  .class-card .class-top { flex-direction: column; }
+  .class-code { align-items: flex-start; flex-direction: row; }
   .assign-row { grid-template-columns: 1fr 1.5fr; }
   .assign-row .prev { grid-column: 2; margin-top: -4px; }
   .assign-row.head span:last-child { display: none; }
