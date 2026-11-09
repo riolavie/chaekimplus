@@ -1,6 +1,8 @@
 /**
  * 책임플러스 - Google Apps Script 서버
  *
+ * 문의: riolavie0516@naver.com
+ *
  * 설치 방법은 README.md 를 참고하세요.
  * 1) 구글 스프레드시트 > 확장 프로그램 > Apps Script 에 이 코드를 붙여넣기
  * 2) 함수 목록에서 setup 을 선택해 한 번 실행 (권한 승인)
@@ -10,6 +12,9 @@
 // 교사 회원가입 코드. 비워두면 URL을 아는 누구나 교사로 가입할 수 있습니다.
 // 예: const SIGNUP_CODE = 'our-school-2026';
 const SIGNUP_CODE = '';
+
+// 문의처 (비밀번호 찾기 메일 등에 표시)
+const CONTACT_EMAIL = 'riolavie0516@naver.com';
 
 // 교사 로그인 유지 기간(일)
 const SESSION_DAYS = 30;
@@ -133,7 +138,8 @@ const ACTIONS = {
       to: email,
       subject: '[책임플러스] 비밀번호 재설정 인증 코드',
       body: t.name + ' 선생님, 안녕하세요.\n\n비밀번호 재설정 인증 코드: ' + code +
-            '\n\n이 코드는 ' + RESET_MINUTES + '분 동안 유효합니다.\n직접 요청하지 않으셨다면 이 메일을 무시하세요.',
+            '\n\n이 코드는 ' + RESET_MINUTES + '분 동안 유효합니다.\n직접 요청하지 않으셨다면 이 메일을 무시하세요.' +
+            '\n\n문의: ' + CONTACT_EMAIL,
     });
     return done;
   },
