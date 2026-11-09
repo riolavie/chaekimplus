@@ -8,14 +8,29 @@ class ApiError extends Error {
 // 네트워크 문제로 실패한 경우(나중에 다시 시도하면 되는 경우)
 const isNetErr = e => e && ['NETWORK', 'NO_URL', 'BUSY'].includes(e.code);
 
-async function api(action, data = {}) {
-  if (!CONFIG.API_URL) throw new ApiError('서버 주소(API_URL)가 설정되지 않았습니다.', 'NO_URL');
+// Apps Script 웹 앱 주소 (일반 계정 / 학교 Google Workspace 계정)
+const SERVER_PATTERN = /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+\/|macros\/)s\/[\w-]+\/exec$/;
+
+// 앱의 '서버 연결' 화면에서 저장한 주소가 있으면 그것을, 없으면 js/config.js 의 기본 주소를 사용
+function apiUrl() {
+  try { return localStorage.getItem('apiUrl') || CONFIG.API_URL; } catch (e) { return CONFIG.API_URL; }
+}
+
+function setApiUrl(url) {
+  try {
+    if (url && url !== CONFIG.API_URL) localStorage.setItem('apiUrl', url);
+    else localStorage.removeItem('apiUrl');
+  } catch (e) { /* 저장할 수 없는 브라우저 */ }
+}
+
+async function api(action, data = {}, url = apiUrl()) {
+  if (!url) throw new ApiError('서버가 연결되지 않았습니다. 첫 화면의 "서버 연결"에서 연결해 주세요.', 'NO_URL');
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 20000);
   let res;
   try {
     // text/plain 으로 보내야 Apps Script 에서 CORS 사전요청 없이 동작합니다.
-    res = await fetch(CONFIG.API_URL, {
+    res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ action, ...data }),

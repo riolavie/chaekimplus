@@ -273,7 +273,7 @@ Sync.onAuthNeeded = () => {
 
 async function checkServer() {
   const lines = [`앱 버전 캐시: ${(await caches.keys().catch(() => [])).join(', ') || '없음'}`,
-    `서버 주소: ${CONFIG.API_URL || '(비어 있음)'}`, `인터넷: ${navigator.onLine ? '연결됨' : '끊김'}`];
+    `서버 주소: ${apiUrl() || '(비어 있음)'}`, `인터넷: ${navigator.onLine ? '연결됨' : '끊김'}`];
   let verdict;
   try {
     const r = await api('ping');
@@ -289,6 +289,134 @@ async function checkServer() {
       </ul>`;
   }
   openDialog(`<h3>서버 연결 확인</h3>${verdict}<pre class="diag">${esc(lines.join('\n'))}</pre>`);
+}
+
+// ---------- 서버 연결 (새 Apps Script 연결) ----------
+
+const shareLink = url => `${location.origin}${location.pathname}?server=${encodeURIComponent(url)}`;
+
+// 서버를 바꾸면 이전 서버의 로그인은 쓸 수 없으므로 로그아웃
+async function switchServer(url) {
+  const pending = (await DB.outboxAll()).length;
+  if (pending && !confirm(`아직 전송되지 않은 기록이 ${pending}건 있습니다. 서버를 바꾸면 이 기록은 새 서버로 전송되어 실패할 수 있어요.\n먼저 인터넷에 연결해 전송하는 것을 권장합니다. 그래도 바꿀까요?`)) return false;
+  setApiUrl(url);
+  await DB.del('teacherSession');
+  await DB.del('studentSession');
+  state.teacher = state.student = null;
+  renderUser();
+  return true;
+}
+
+function viewServer() {
+  const current = apiUrl();
+  const custom = current && current !== CONFIG.API_URL;
+  render(`
+    <section class="page-head">
+      <div><p class="eyebrow">설정</p><h1>서버 연결</h1></div>
+      <button class="btn ghost" id="back">← 처음으로</button>
+    </section>
+
+    <section class="card">
+      <h3>현재 연결된 서버</h3>
+      ${current ? `<p class="diag">${esc(current)}</p>
+        <p class="muted small">${custom ? '이 기기에서 직접 연결한 서버입니다.' : '앱에 기본으로 설정된 서버입니다.'}</p>`
+        : '<p class="notice warn">연결된 서버가 없습니다.</p>'}
+      <div class="actions">
+        ${custom && CONFIG.API_URL ? '<button class="btn ghost" id="resetServer">기본 서버로 되돌리기</button>' : ''}
+        ${current ? '<button class="btn" id="check">연결 확인</button>' : ''}
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>새 서버 연결하기</h3>
+      <p class="muted small">학교·학급별로 따로 데이터를 저장하려면, 선생님의 Google 계정으로 서버(Apps Script)를 만들어 연결하세요. 처음 한 번, 10분 정도 걸립니다.</p>
+      <ol class="steps">
+        <li><b>스프레드시트 만들기</b>
+          <span><a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a>에서 새 스프레드시트를 만들고 이름을 정합니다. (예: 책임플러스 DB)</span></li>
+        <li><b>Apps Script 열기</b>
+          <span>스프레드시트 메뉴 <b>확장 프로그램 → Apps Script</b>를 누릅니다.</span></li>
+        <li><b>서버 코드 붙여넣기</b>
+          <span>편집기의 기존 코드를 모두 지우고, 아래 버튼으로 복사한 코드를 붙여넣은 뒤 저장(💾)합니다.</span>
+          <span class="actions left"><button class="btn sm" id="copyCode">📋 서버 코드 복사</button>
+            <a class="btn sm ghost" href="apps-script/Code.gs" target="_blank" rel="noopener">코드 보기</a></span></li>
+        <li><b>setup 한 번 실행</b>
+          <span>위쪽 함수 목록에서 <code>setup</code>을 고르고 <b>실행</b>을 누릅니다. 권한 창이 뜨면 <b>권한 검토 → 내 계정 선택 → 고급 → (안전하지 않음)으로 이동 → 허용</b> 순서로 진행합니다. 직접 만든 코드라서 나오는 안내이니 걱정하지 않으셔도 됩니다.</span></li>
+        <li><b>웹 앱으로 배포</b>
+          <span><b>배포 → 새 배포 → 유형 선택(⚙️) → 웹 앱</b>을 고르고,
+            <b>실행 사용자: 나</b>, <b>액세스 권한: 모든 사용자</b>로 정한 뒤 <b>배포</b>를 누릅니다.
+            나오는 <b>웹 앱 URL</b>(…/exec로 끝남)을 복사합니다.</span></li>
+        <li><b>아래 칸에 붙여넣고 연결</b>
+          <form id="f" class="server-form">
+            <input name="url" required placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" spellcheck="false">
+            <p class="form-error" hidden></p>
+            <button class="btn primary block">연결 테스트 후 저장</button>
+          </form></li>
+      </ol>
+      <p class="hint">💡 나중에 서버 코드를 고칠 때는 <b>새 배포</b> 대신 <b>배포 관리 → 수정(연필) → 버전: 새 버전 → 배포</b>를 하세요. 주소가 그대로라 다시 연결할 필요가 없습니다.</p>
+    </section>
+
+    ${current ? `<section class="card">
+      <h3>학생 기기 연결 링크</h3>
+      <p class="muted small">학생들이 이 링크로 처음 접속하면 같은 서버에 자동으로 연결됩니다. 링크를 학급 게시판에 올리거나 QR 코드로 만들어 나눠 주세요.</p>
+      <div class="share-row"><input id="share" readonly value="${esc(shareLink(current))}"><button class="btn" id="copyShare">복사</button></div>
+      ${custom ? '' : '<p class="muted small">기본 서버를 쓰는 경우에는 앱 주소만 알려줘도 됩니다.</p>'}
+    </section>` : ''}`);
+
+  document.getElementById('back').onclick = viewHome;
+  const check = document.getElementById('check');
+  if (check) check.onclick = checkServer;
+  const reset = document.getElementById('resetServer');
+  if (reset) reset.onclick = async () => {
+    if (await switchServer(CONFIG.API_URL)) { toast('기본 서버로 되돌렸습니다.', 'ok'); viewServer(); }
+  };
+  const copy = async (text, msg) => {
+    try { await navigator.clipboard.writeText(text); toast(msg, 'ok'); }
+    catch (e) { toast('복사하지 못했습니다. 직접 선택해 복사해 주세요.', 'warn'); }
+  };
+  document.getElementById('copyCode').onclick = async () => {
+    try {
+      const res = await fetch('apps-script/Code.gs', { cache: 'no-cache' });
+      if (!res.ok) throw new Error();
+      await copy(await res.text(), '서버 코드를 복사했습니다. Apps Script 편집기에 붙여넣으세요.');
+    } catch (e) {
+      toast('코드를 불러오지 못했습니다. "코드 보기"에서 직접 복사해 주세요.', 'warn');
+    }
+  };
+  const share = document.getElementById('copyShare');
+  if (share) share.onclick = () => copy(document.getElementById('share').value, '연결 링크를 복사했습니다.');
+
+  const f = document.getElementById('f');
+  f.onsubmit = e => {
+    e.preventDefault();
+    busy(f.querySelector('.primary'), async () => {
+      formError(f);
+      const url = f.url.value.trim();
+      if (!SERVER_PATTERN.test(url)) {
+        return formError(f, 'Apps Script 웹 앱 주소가 아닙니다. "https://script.google.com/…/exec" 형태의 웹 앱 URL을 붙여넣어 주세요. (편집기 주소나 "/dev"로 끝나는 주소는 안 됩니다)');
+      }
+      try {
+        await api('ping', {}, url);
+      } catch (err) {
+        return formError(f, `연결 테스트에 실패했습니다: ${err.message}\n배포의 액세스 권한이 "모든 사용자"인지, setup을 실행했는지 확인해 주세요.`);
+      }
+      if (url === current) return toast('이미 이 서버에 연결되어 있습니다.');
+      if (await switchServer(url)) {
+        toast('새 서버에 연결했습니다. 교사는 이 서버에서 새로 회원가입해 주세요.', 'ok');
+        viewServer();
+      }
+    });
+  };
+}
+
+// 연결 링크(?server=...)로 들어온 경우
+async function applyServerFromLink() {
+  const params = new URLSearchParams(location.search);
+  const url = params.get('server');
+  if (!url) return;
+  params.delete('server');
+  history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : '') + location.hash);
+  if (!SERVER_PATTERN.test(url) || url === apiUrl()) return;
+  if (await switchServer(url)) toast('선생님이 알려준 서버에 연결했습니다.', 'ok');
 }
 
 // ---------- 첫 화면 ----------
@@ -308,9 +436,9 @@ function viewHome() {
         <span class="role-icon">📋</span><b>교사</b><small>학반 세팅 · 월별 우수 학생</small>
       </button>
     </div>
-    ${CONFIG.API_URL ? '' : `<p class="notice warn">서버 주소가 아직 설정되지 않았습니다. <code>js/config.js</code>의 <code>API_URL</code>을 입력하세요.</p>`}
-    <p class="center"><button class="link sm" id="checkServer">서버 연결 확인</button></p>`);
-  document.getElementById('checkServer').onclick = checkServer;
+    ${apiUrl() ? '' : `<p class="notice warn">서버가 아직 연결되지 않았습니다. 아래 <b>서버 연결</b>에서 연결해 주세요.</p>`}
+    <p class="center"><button class="link sm" id="goServer">⚙️ 서버 연결</button></p>`);
+  document.getElementById('goServer').onclick = () => viewServer();
   document.getElementById('goStudent').onclick = viewStudentLogin;
   document.getElementById('goTeacher').onclick = () => viewTeacherLogin();
 }
@@ -1309,6 +1437,7 @@ async function init() {
     if (navigator.onLine && (await DB.outboxAll()).length) Sync.run();
   }, 30000);
 
+  await applyServerFromLink();
   state.teacher = (await DB.get('teacherSession')) || null;
   state.student = state.teacher ? null : (await DB.get('studentSession')) || null;
   renderUser();

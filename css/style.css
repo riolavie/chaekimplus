@@ -350,6 +350,20 @@ button.winner { font: inherit; color: inherit; cursor: pointer; }
 
 .diag { white-space: pre-wrap; word-break: break-all; font-size: .78rem; background: var(--bg); padding: 10px; border-radius: 8px; }
 
+.steps { margin: 12px 0; padding-left: 1.4em; }
+.steps li { margin-bottom: 14px; padding-left: 4px; }
+.steps li::marker { font-weight: 800; color: var(--brand); }
+.steps li > b { display: block; margin-bottom: 2px; }
+.steps li > span { display: block; color: var(--muted); font-size: .9rem; }
+.steps a { color: var(--brand); font-weight: 600; }
+.actions.left { justify-content: flex-start; }
+a.btn { text-decoration: none; }
+.server-form { margin-top: 8px; }
+.server-form input { font-size: .85rem; }
+.form-error { white-space: pre-line; }
+.share-row { display: flex; gap: 8px; }
+.share-row input { margin: 0; font-size: .8rem; }
+
 @media (max-width: 560px) {
   h1 { font-size: 1.35rem; }
   .hide-sm { display: none; }
