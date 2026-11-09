@@ -1,5 +1,8 @@
 'use strict';
 
+// 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
+const APP_VERSION = 'v10 (2026.11.09)';
+
 const SCALE = CONFIG.SCALE; // 높은 점수부터
 const MAX_SCORE = Math.max(...SCALE.map(s => s.value));
 const $app = document.getElementById('app');
@@ -408,6 +411,18 @@ function viewServer() {
   };
 }
 
+// 저장된 앱 파일을 모두 지우고 새로 받기 (입력한 기록·로그인은 그대로 유지)
+async function forceUpdate() {
+  if (!navigator.onLine) return toast('인터넷에 연결된 상태에서 업데이트할 수 있어요.', 'warn');
+  try {
+    const regs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
+    await Promise.all(regs.map(r => r.unregister()));
+    const keys = await caches.keys();
+    await Promise.all(keys.map(k => caches.delete(k)));
+  } catch (e) { /* 지원하지 않는 브라우저 */ }
+  location.reload();
+}
+
 // 연결 링크(?server=...)로 들어온 경우
 async function applyServerFromLink() {
   const params = new URLSearchParams(location.search);
@@ -437,8 +452,10 @@ function viewHome() {
       </button>
     </div>
     ${apiUrl() ? '' : `<p class="notice warn">서버가 아직 연결되지 않았습니다. 아래 <b>서버 연결</b>에서 연결해 주세요.</p>`}
-    <p class="center"><button class="link sm" id="goServer">⚙️ 서버 연결</button></p>`);
+    <p class="center"><button class="link sm" id="goServer">⚙️ 서버 연결</button></p>
+    <p class="center muted small">책임플러스 ${APP_VERSION} · <button class="link sm" id="forceUpdate">최신 버전으로 업데이트</button></p>`);
   document.getElementById('goServer').onclick = () => viewServer();
+  document.getElementById('forceUpdate').onclick = forceUpdate;
   document.getElementById('goStudent').onclick = viewStudentLogin;
   document.getElementById('goTeacher').onclick = () => viewTeacherLogin();
 }
