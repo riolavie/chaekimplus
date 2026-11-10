@@ -1,7 +1,7 @@
 'use strict';
 
 // 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
-const APP_VERSION = 'v12 (2026.11.10)';
+const APP_VERSION = 'v13 (2026.11.10)';
 
 const SCALE = CONFIG.SCALE; // 높은 점수부터
 const MAX_SCORE = Math.max(...SCALE.map(s => s.value));
@@ -476,20 +476,29 @@ async function viewStudentLogin() {
       <label>학급 코드<input name="code" required placeholder="선생님이 알려준 코드" class="code-input" value="${esc(prev.classCode)}"></label>
       <label>개인 비밀번호 <span class="muted small">(숫자 4자리)</span>
         <input name="pin" type="password" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" class="pin-input" placeholder="••••">
-        <span class="hint" id="pinHint">처음 입장하면 나만 아는 비밀번호를 새로 정해요.</span>
+        <span class="hint">처음이면 선생님이 알려준 <b>처음 비밀번호(1234)</b>를 입력하세요.</span>
       </label>
-      <label id="pin2Wrap" hidden>비밀번호 확인 <span class="muted small">(한 번 더)</span>
-        <input name="pin2" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" class="pin-input" placeholder="••••">
-      </label>
+      <div id="newPinWrap" class="new-pin" hidden>
+        <p class="notice">🔑 <b>나만 아는 새 비밀번호</b>를 정해 주세요. 숫자 4자리, 1234는 안 돼요. 꼭 기억하세요!</p>
+        <div class="row2 even">
+          <label>새 비밀번호<input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" class="pin-input" placeholder="••••"></label>
+          <label>한 번 더<input name="newPin2" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" class="pin-input" placeholder="••••"></label>
+        </div>
+      </div>
       <p class="form-error" hidden></p>
       <button class="btn primary block">입장하기</button>
       <button type="button" class="link" id="back">← 처음으로</button>
     </form>`);
   const f = document.getElementById('f');
-  const pin2Wrap = f.querySelector('#pin2Wrap');
+  const newPinWrap = f.querySelector('#newPinWrap');
+  const showNewPin = on => {
+    newPinWrap.hidden = !on;
+    f.newPin.required = f.newPin2.required = on;
+    f.querySelector('.primary').textContent = on ? '새 비밀번호로 입장하기' : '입장하기';
+  };
   f.querySelector('#back').onclick = viewHome;
-  // 학생 정보를 바꾸면 비밀번호 확인 단계를 처음부터
-  ['classNo', 'number', 'name', 'code'].forEach(n => f[n].addEventListener('input', () => { pin2Wrap.hidden = true; f.pin2.required = false; }));
+  // 학생 정보나 비밀번호를 바꾸면 새 비밀번호 단계를 처음부터
+  ['classNo', 'number', 'name', 'code', 'pin'].forEach(n => f[n].addEventListener('input', () => showNewPin(false)));
   f.onsubmit = e => {
     e.preventDefault();
     busy(f.querySelector('.primary'), async () => {
@@ -505,7 +514,7 @@ async function viewStudentLogin() {
       let r;
       try {
         r = await api('studentLogin', { classCode: s.classCode, number: s.number, name: s.name, pin,
-          pin2: pin2Wrap.hidden ? '' : f.pin2.value });
+          newPin: newPinWrap.hidden ? '' : f.newPin.value, newPin2: newPinWrap.hidden ? '' : f.newPin2.value });
       } catch (err) {
         if (!isNetErr(err)) return formError(f, err.message);
         // 오프라인: 이 기기에서 입장한 적이 있으면 저장된 확인값으로 입장
@@ -517,18 +526,53 @@ async function viewStudentLogin() {
         }
         return enterStudent({ ...s, token: a.token });
       }
-      if (r.needSetup) {
-        pin2Wrap.hidden = false;
-        f.pin2.required = true;
-        f.querySelector('#pinHint').textContent = '처음 입장했어요. 방금 입력한 비밀번호를 한 번 더 입력해 주세요. 잊지 않도록 꼭 기억하세요!';
-        f.pin2.focus();
+      if (r.mustChange) {
+        showNewPin(true);
+        f.newPin.focus();
         return;
       }
+      const usedPin = r.changed ? f.newPin.value : pin;
       await DB.set('config:' + s.classCode, r.config);
-      const salt = uid();
-      await DB.set(authKey, { name: s.name, token: r.token, salt, verifier: await pbkdf2(pin, salt) });
-      if (r.created) toast('비밀번호를 정했어요. 다음부터 이 비밀번호로 입장해요.', 'ok');
+      await saveStudentVerifier(authKey, s.name, r.token, usedPin);
+      if (r.changed) toast('새 비밀번호를 정했어요. 다음부터 이 비밀번호로 입장해요.', 'ok');
       await enterStudent({ ...s, token: r.token });
+    });
+  };
+}
+
+// 오프라인 입장용 확인값 (비밀번호 자체는 저장하지 않음)
+async function saveStudentVerifier(authKey, name, token, pin) {
+  const salt = uid();
+  await DB.set(authKey, { name, token, salt, verifier: await pbkdf2(pin, salt) });
+}
+
+// 학생: 내 비밀번호 바꾸기
+function changeMyPinDialog() {
+  const s = state.student;
+  openDialog(`
+    <h3>🔑 비밀번호 바꾸기</h3>
+    <form id="pf">
+      <label>지금 비밀번호<input name="pin" type="password" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" class="pin-input" placeholder="••••"></label>
+      <div class="row2 even">
+        <label>새 비밀번호<input name="newPin" type="password" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" class="pin-input" placeholder="••••"></label>
+        <label>한 번 더<input name="newPin2" type="password" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" class="pin-input" placeholder="••••"></label>
+      </div>
+      <p class="form-error" hidden></p>
+      <button class="btn primary block">바꾸기</button>
+    </form>`);
+  const pf = $dialog.querySelector('#pf');
+  pf.onsubmit = e => {
+    e.preventDefault();
+    busy(pf.querySelector('.primary'), async () => {
+      formError(pf);
+      try {
+        await api('changeMyPin', { token: s.token, pin: pf.pin.value, newPin: pf.newPin.value, newPin2: pf.newPin2.value });
+        await saveStudentVerifier(`studentAuth:${s.classCode}:${s.number}`, s.name, s.token, pf.newPin.value);
+        $dialog.close();
+        toast('비밀번호를 바꿨어요. 다음부터 새 비밀번호로 입장해요.', 'ok');
+      } catch (err) {
+        formError(pf, isNetErr(err) ? '인터넷에 연결된 상태에서 바꿀 수 있어요.' : err.message);
+      }
     });
   };
 }
@@ -564,7 +608,10 @@ async function viewStudent() {
     <section class="card my-role">
       <div><span class="muted small">내 역할</span>
         <b>${myTasks.length ? myTasks.map(t => esc(t.name)).join(', ') : '없음'}</b></div>
-      ${isInspector ? '<span class="status sent">검사 담당</span>' : ''}
+      <div class="role-side">
+        ${isInspector ? '<span class="status sent">검사 담당</span>' : ''}
+        <button class="link sm" id="changePin">🔑 비밀번호 바꾸기</button>
+      </div>
     </section>
     ${isInspector ? inspectFormHtml(cfg, s.number) + myEval : `${myEval}
       <p class="notice">평가는 선생님이 지정한 검사 담당 학생만 할 수 있어요.</p>`}
@@ -575,6 +622,7 @@ async function viewStudent() {
         <span class="muted">${esc(assigneeText(cfg, t) || '미배정')}</span></li>`).join('')}</ul>
     </section>`);
 
+  document.getElementById('changePin').onclick = changeMyPinDialog;
   if (isInspector) {
     bindInspectForm(cfg);
     renderHistory();
@@ -1012,6 +1060,7 @@ async function viewTeacherHome(refresh = true) {
           ${m.winners.length ? m.winners.map(w => `<span class="chip">${medal(w.rank)} ${esc(w.no)}번 ${esc(w.name)} <small>${w.avg.toFixed(2)}</small></span>`).join('')
             : `<span class="muted small">— ${m.count ? `최소 ${c.evalMinChecks}회 평가받은 학생이 아직 없어요` : '아직 평가 기록이 없어요'}</span>`}
         </div>
+        <p class="card-links"><button class="link sm" data-act="pins" data-code="${esc(c.classCode)}">🔑 학생 비밀번호 관리</button></p>
         <div class="card-actions four">
           <button class="btn primary" data-act="eval" data-code="${esc(c.classCode)}">🏆 월별 우수 학생</button>
           <button class="btn" data-act="assign" data-code="${esc(c.classCode)}">🎲 역할 배정</button>
@@ -1113,7 +1162,7 @@ async function viewTeacherHome(refresh = true) {
   $app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
     const c = classes.find(x => x.classCode === b.dataset.code);
     ({ eval: () => viewRecords(c, 'eval'), records: () => viewRecords(c, 'list'),
-       assign: () => viewSetup(c, 3), setup: () => viewSetup(c, 1) })[b.dataset.act]();
+       assign: () => viewSetup(c, 3), setup: () => viewSetup(c, 1), pins: () => viewPins(c) })[b.dataset.act]();
   });
   $app.querySelectorAll('[data-memo]').forEach(li => li.onclick = () =>
     viewRecords(classes.find(x => x.classCode === li.dataset.memo), 'list'));
@@ -1263,13 +1312,12 @@ function viewSetup(orig, startStep = 1) {
         <span class="hint">엑셀·나이스에서 번호·이름 두 열을 복사해 붙여넣어도 됩니다. 명단에 있는 학생만 입장할 수 있어요.</span>
       </label>
       <p class="muted small" id="rosterCount"></p>
-      ${isNew ? '' : `<div class="pin-reset">
-        <span><b>🔑 학생 개인 비밀번호 초기화</b><br><span class="muted small">비밀번호를 잊은 학생은 초기화하면 다음 입장 때 새로 정합니다.</span></span>
-        <select id="pinNo">${cls.students.map(s => `<option value="${esc(s.no)}">${esc(s.no)}번 ${esc(s.name)}</option>`).join('')}</select>
-        <button type="button" class="btn sm" id="pinReset">초기화</button>
+      ${isNew ? '<p class="hint">🔑 학생 개인 비밀번호는 처음에 모두 <b>1234</b>이고, 학생이 처음 입장할 때 자기 비밀번호로 바꿉니다.</p>' : `<div class="pin-reset">
+        <span><b>🔑 학생 비밀번호 관리</b><br><span class="muted small">학생별 비밀번호 확인, 1234로 초기화</span></span>
+        <button type="button" class="btn sm" id="pinManage">열기</button>
       </div>`}`;
-    const pr = $body.querySelector('#pinReset');
-    if (pr) pr.onclick = () => resetStudentPin(cls, $body.querySelector('#pinNo').value);
+    const pm = $body.querySelector('#pinManage');
+    if (pm) pm.onclick = () => viewPins(cls);
     const ta = $body.querySelector('[name=roster]');
     const count = () => {
       const { students, bad } = parseRoster(ta.value);
@@ -1483,19 +1531,67 @@ function showStudentDetail(cls, records, no, month) {
         <td class="nowrap">${scorePill(r.score)}</td><td>${esc(r.memo)}</td>
         <td class="nowrap">${esc(r.inspectorNo)}번 ${esc(r.inspectorName)}</td></tr>`).join('')}</tbody>
     </table></div>
-    <div class="actions left"><button class="btn sm ghost" id="pinResetDlg">🔑 이 학생 개인 비밀번호 초기화</button></div>`);
+    <div class="actions left"><button class="btn sm ghost" id="pinResetDlg">🔑 이 학생 비밀번호를 1234로 초기화</button></div>`);
   $dialog.querySelector('#pinResetDlg').onclick = () => resetStudentPin(cls, no);
 }
 
-async function resetStudentPin(cls, no) {
-  if (!confirm(`${studentLabel(cls, no)} 학생의 개인 비밀번호를 초기화할까요?\n학생은 다음에 입장할 때 새 비밀번호를 정합니다.`)) return;
+async function resetStudentPin(cls, no, after) {
+  const who = no ? `${studentLabel(cls, no)} 학생의` : '학급 학생 전체의';
+  if (!confirm(`${who} 비밀번호를 1234로 초기화할까요?\n학생은 다음에 1234로 입장한 뒤 새 비밀번호를 정합니다.`)) return;
   try {
-    const r = await api('resetStudentPin', { token: state.teacher.token, classCode: cls.classCode, studentNo: no });
-    toast(r.reset ? `${studentLabel(cls, no)} 학생의 비밀번호를 초기화했습니다.` : '아직 비밀번호를 정하지 않은 학생입니다.', 'ok');
+    const r = await api('resetStudentPin', { token: state.teacher.token, classCode: cls.classCode, ...(no ? { studentNo: no } : { all: true }) });
+    toast(`${no ? studentLabel(cls, no) + ' 학생' : `${r.reset}명`}의 비밀번호를 ${r.defaultPin}(으)로 초기화했습니다.`, 'ok');
+    if (after) after();
   } catch (e) {
     if (e.code === 'AUTH') Sync.onAuthNeeded();
     else toast(isNetErr(e) ? '인터넷에 연결된 상태에서 초기화할 수 있어요.' : e.message, 'warn');
   }
+}
+
+// 교사: 학생 비밀번호 확인·초기화
+async function viewPins(cls) {
+  let show = false;
+  let pins = null;
+  let error = '';
+  const draw = () => {
+    openDialog(`
+      <h3>🔑 학생 비밀번호 관리 <span class="muted small">${esc(cls.className)}</span></h3>
+      <p class="hint">처음이거나 초기화한 학생의 비밀번호는 <b>1234</b>이고, 학생은 입장하자마자 자기 비밀번호로 바꿉니다.
+        잊은 학생은 <b>초기화</b>한 뒤 1234로 입장하게 해 주세요.</p>
+      ${pins ? `
+        <div class="toolbar">
+          <label class="check"><input type="checkbox" id="showPins" ${show ? 'checked' : ''}> 비밀번호 보기</label>
+          <span class="grow"></span>
+          <button class="btn sm ghost" id="resetAll">전체 1234로 초기화</button>
+        </div>
+        <p class="muted small">학생이 정함 ${pins.filter(p => p.status !== 'default').length}명 · 처음 비밀번호(1234) ${pins.filter(p => p.status === 'default').length}명</p>
+        <div class="table-wrap pins-table"><table>
+          <thead><tr><th>번호</th><th>이름</th><th>비밀번호</th><th>상태</th><th></th></tr></thead>
+          <tbody>${pins.map(p => `<tr>
+            <td>${esc(p.no)}</td><td class="nowrap">${esc(p.name)}</td>
+            <td class="mono">${p.status === 'hidden' ? '<span class="muted small">다음 입장 후 표시</span>' : show || p.status === 'default' ? esc(p.pin) : '••••'}</td>
+            <td class="nowrap">${p.status === 'default' ? '<span class="status wait">처음 비밀번호</span>' : '<span class="status sent">학생이 정함</span>'}${p.locked ? ' <span class="status wait">🔒 잠김</span>' : ''}</td>
+            <td><button class="btn sm ghost" data-reset="${esc(p.no)}">초기화</button></td></tr>`).join('')}</tbody>
+        </table></div>`
+      : error ? `<p class="notice warn">${esc(error)}</p>` : '<p class="muted">불러오는 중…</p>'}`);
+    const sp = $dialog.querySelector('#showPins');
+    if (sp) sp.onchange = () => { show = sp.checked; draw(); };
+    const ra = $dialog.querySelector('#resetAll');
+    if (ra) ra.onclick = () => resetStudentPin(cls, null, load);
+    $dialog.querySelectorAll('[data-reset]').forEach(b => b.onclick = () => resetStudentPin(cls, b.dataset.reset, load));
+  };
+  const load = async () => {
+    try {
+      pins = (await api('listStudentPins', { token: state.teacher.token, classCode: cls.classCode })).pins;
+      error = '';
+    } catch (e) {
+      if (e.code === 'AUTH') Sync.onAuthNeeded();
+      error = isNetErr(e) ? '인터넷에 연결된 상태에서 볼 수 있어요.' : e.message;
+    }
+    draw();
+  };
+  draw();
+  load();
 }
 
 async function viewRecords(cls, tab = 'eval') {

@@ -425,6 +425,13 @@ a.btn { text-decoration: none; }
 .badge-excellent small { font-weight: 500; color: var(--muted); }
 .memo-text { margin: 4px 0 0; font-size: .9rem; }
 
+.new-pin { margin-bottom: 4px; }
+.new-pin .notice { margin-bottom: 10px; font-size: .9rem; }
+.role-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.card-links { margin: 10px 0 0; text-align: right; }
+.pins-table td { vertical-align: middle; }
+.pins-table .btn.sm { padding: 3px 10px; }
+
 @media (max-width: 920px) {
   .dash { grid-template-columns: 1fr; }
   .tiles { grid-template-columns: repeat(2, 1fr); }

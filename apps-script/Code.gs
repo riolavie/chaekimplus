@@ -31,12 +31,13 @@ const SHEETS = {
   RoleHistory: ['classCode', 'month', 'changedAt', 'teacherEmail', 'assignments'],
   // 비밀번호 찾기 인증 코드 (해시로만 저장)
   Resets: ['email', 'codeHash', 'expiresAt', 'attempts', 'sentAt'],
-  // 학생 개인 비밀번호(숫자 4자리, 해시로만 저장)와 학생 로그인
-  StudentPins: ['classCode', 'studentNo', 'salt', 'hash', 'fails', 'lockedUntil', 'updatedAt'],
+  // 학생 개인 비밀번호(숫자 4자리). 교사가 확인할 수 있도록 pin 열에 저장 (salt·hash 는 이전 버전 호환용)
+  StudentPins: ['classCode', 'studentNo', 'salt', 'hash', 'fails', 'lockedUntil', 'updatedAt', 'pin', 'mustChange'],
   StudentSessions: ['token', 'classCode', 'studentNo', 'expiresAt'],
 };
 
 const STUDENT_SESSION_DAYS = 180;
+const DEFAULT_PIN = '1234';  // 처음·초기화 후 비밀번호. 학생은 입장하자마자 자기 비밀번호로 바꿈
 const PIN_MAX_FAILS = 5;     // 연속으로 틀리면
 const PIN_LOCK_MINUTES = 5;  // 이 시간 동안 잠금
 
@@ -280,7 +281,8 @@ const ACTIONS = {
   },
 
   // 학생 입장: 반·번호·이름·학급 코드 + 개인 비밀번호(숫자 4자리)
-  // 비밀번호가 아직 없으면 needSetup 을 돌려주고, 확인값(pin2)과 함께 다시 오면 새로 정함
+  // 처음이거나 교사가 초기화했다면 비밀번호는 1234 이고, 맞게 입력하면 mustChange 를 돌려줌
+  // → newPin·newPin2 와 함께 다시 오면 새 비밀번호로 바꾸고 입장
   studentLogin(req) {
     const c = findClass_(req.classCode);
     if (!c) fail_('학급 코드를 찾을 수 없습니다.', 'NOT_FOUND');
@@ -292,44 +294,75 @@ const ACTIONS = {
       if (!st) fail_('학급 명단에 ' + no + '번 학생이 없습니다. 번호를 확인해 주세요.', 'BAD');
       if (st.name && strip(st.name) !== strip(req.name)) fail_(no + '번의 이름이 명단과 다릅니다. 번호와 이름을 확인해 주세요.', 'BAD');
     }
-    const pin = String(req.pin || '');
-    const sh = sheet_('StudentPins');
-    const row = rows_('StudentPins').find(r => r.classCode === cls.classCode && r.studentNo === no);
     const now = new Date();
-
-    if (!row || !row.hash) {
-      if (!req.pin2) return { needSetup: true };
-      if (!/^\d{4}$/.test(pin)) fail_('비밀번호는 숫자 4자리로 정해 주세요.', 'BAD');
-      if (pin !== String(req.pin2)) fail_('두 비밀번호가 서로 다릅니다. 다시 입력해 주세요.', 'BAD');
-      const salt = Utilities.getUuid();
-      const data = [cls.classCode, no, salt, hash_(pin, salt), '0', '', now.toISOString()];
-      if (row) sh.getRange(row._row, 1, 1, data.length).setValues([data]);
-      else sh.appendRow(data);
-    } else {
-      if (row.lockedUntil && row.lockedUntil > now.toISOString()) {
-        fail_('비밀번호를 여러 번 틀려 잠시 잠겼습니다. ' + PIN_LOCK_MINUTES + '분 뒤에 다시 해 보세요.', 'BAD');
+    const pin = String(req.pin || '');
+    const row = pinRow_(cls.classCode, no);
+    if (row.lockedUntil && row.lockedUntil > now.toISOString()) {
+      fail_('비밀번호를 여러 번 틀려 잠시 잠겼습니다. ' + PIN_LOCK_MINUTES + '분 뒤에 다시 해 보세요.', 'BAD');
+    }
+    if (!checkPin_(row, pin)) {
+      const fails = Number(row.fails || 0) + 1;
+      const lock = fails >= PIN_MAX_FAILS ? new Date(now.getTime() + PIN_LOCK_MINUTES * 60000).toISOString() : '';
+      savePinRow_(row, { fails: String(fails >= PIN_MAX_FAILS ? 0 : fails), lockedUntil: lock });
+      fail_('비밀번호가 맞지 않습니다.' + (lock ? ' 잠시 잠겼습니다. ' + PIN_LOCK_MINUTES + '분 뒤에 다시 해 보세요.'
+        : ' (남은 기회 ' + (PIN_MAX_FAILS - fails) + '번) 처음이라면 ' + DEFAULT_PIN + '를 입력하고, 잊었다면 선생님께 초기화를 부탁하세요.'), 'BAD');
+    }
+    const mustChange = !row.pin && !row.hash ? true : row.mustChange === '1';
+    let changed = false;
+    if (mustChange) {
+      if (!req.newPin) {
+        savePinRow_(row, { fails: '0', lockedUntil: '' });
+        return { mustChange: true };
       }
-      if (hash_(pin, row.salt) !== row.hash) {
-        const fails = Number(row.fails || 0) + 1;
-        const lock = fails >= PIN_MAX_FAILS ? new Date(now.getTime() + PIN_LOCK_MINUTES * 60000).toISOString() : '';
-        sh.getRange(row._row, 5, 1, 2).setValues([[String(fails >= PIN_MAX_FAILS ? 0 : fails), lock]]);
-        fail_('비밀번호가 맞지 않습니다.' + (lock ? ' 잠시 잠겼습니다. ' + PIN_LOCK_MINUTES + '분 뒤에 다시 해 보세요.'
-          : ' (남은 기회 ' + (PIN_MAX_FAILS - fails) + '번) 잊었다면 선생님께 초기화를 부탁하세요.'), 'BAD');
-      }
-      if (row.fails !== '0' || row.lockedUntil) sh.getRange(row._row, 5, 1, 2).setValues([['0', '']]);
+      validateNewPin_(req.newPin, req.newPin2);
+      savePinRow_(row, { pin: String(req.newPin), mustChange: '', salt: '', hash: '', fails: '0', lockedUntil: '' });
+      changed = true;
+    } else if (!row.pin || row.fails !== '0' || row.lockedUntil) {
+      // 이전 버전(해시만 있음)이면 교사가 볼 수 있도록 비밀번호 열로 옮겨 저장
+      savePinRow_(row, { pin: pin, salt: '', hash: '', fails: '0', lockedUntil: '' });
     }
     const token = Utilities.getUuid() + Utilities.getUuid().replace(/-/g, '');
     const expires = new Date(now.getTime() + STUDENT_SESSION_DAYS * 86400000).toISOString();
     sheet_('StudentSessions').appendRow([token, cls.classCode, no, expires]);
     delete cls.teacherEmail;
     delete cls.roleMonths;
-    return { token, config: cls, created: !row || !row.hash };
+    return { token, config: cls, changed };
+  },
+
+  // 학생: 내 비밀번호 바꾸기 (현재 비밀번호 확인)
+  changeMyPin(req) {
+    const s = studentAuth_(req);
+    const row = pinRow_(s.classCode, s.studentNo);
+    if (!checkPin_(row, String(req.pin || ''))) fail_('현재 비밀번호가 맞지 않습니다.', 'BAD');
+    validateNewPin_(req.newPin, req.newPin2);
+    savePinRow_(row, { pin: String(req.newPin), mustChange: '', salt: '', hash: '', fails: '0', lockedUntil: '' });
+    return { changed: true };
+  },
+
+  // 교사: 학급 학생들의 비밀번호와 상태 보기
+  listStudentPins(req) {
+    const c = teacherClass_(req);
+    const cls = toClass_(c);
+    const now = new Date().toISOString();
+    const rows = rows_('StudentPins').filter(r => r.classCode === c.classCode);
+    return {
+      pins: cls.students.map(st => {
+        const r = rows.find(x => x.studentNo === st.no) || {};
+        const isDefault = (!r.pin && !r.hash) || r.mustChange === '1';
+        return {
+          no: st.no, name: st.name,
+          pin: isDefault ? DEFAULT_PIN : (r.pin || ''),
+          status: isDefault ? 'default' : r.pin ? 'set' : 'hidden',
+          locked: !!(r.lockedUntil && r.lockedUntil > now),
+          updatedAt: r.updatedAt || '',
+        };
+      }),
+    };
   },
 
   // 학생: 내가 받은 평가 (평가자는 숨기고, 메모는 선생님이 허용한 경우에만)
   myRecords(req) {
-    const s = req.token && rows_('StudentSessions').find(r => r.token === req.token);
-    if (!s || s.expiresAt < new Date().toISOString()) fail_('다시 입장해 주세요.', 'AUTH');
+    const s = studentAuth_(req);
     const c = findClass_(s.classCode);
     if (!c) fail_('학급을 찾을 수 없습니다.', 'NOT_FOUND');
     const cls = toClass_(c);
@@ -350,20 +383,63 @@ const ACTIONS = {
     };
   },
 
-  // 교사: 학생 개인 비밀번호 초기화 (학생은 다음 입장 때 새로 정함)
+  // 교사: 학생 비밀번호를 1234 로 초기화 (studentNo 하나 또는 all: true 로 전체)
+  // 학생은 다음 입장 때 1234 로 들어와 새 비밀번호를 정함
   resetStudentPin(req) {
-    const email = auth_(req);
-    const c = findClass_(req.classCode);
-    if (!c || c.teacherEmail !== email) fail_('학급을 찾을 수 없습니다.', 'NOT_FOUND');
-    const no = String(parseInt(req.studentNo, 10));
-    const row = rows_('StudentPins').find(r => r.classCode === c.classCode && r.studentNo === no);
-    if (row) sheet_('StudentPins').getRange(row._row, 3, 1, 5).setValues([['', '', '0', '', new Date().toISOString()]]);
+    const c = teacherClass_(req);
+    const cls = toClass_(c);
+    const targets = req.all ? cls.students.map(st => st.no) : [String(parseInt(req.studentNo, 10))];
+    targets.forEach(no => savePinRow_(pinRow_(c.classCode, no),
+      { pin: '', mustChange: '1', salt: '', hash: '', fails: '0', lockedUntil: '' }));
     const sessions = sheet_('StudentSessions');
-    rows_('StudentSessions').filter(x => x.classCode === c.classCode && x.studentNo === no)
+    rows_('StudentSessions').filter(x => x.classCode === c.classCode && targets.indexOf(x.studentNo) >= 0)
       .forEach(x => sessions.getRange(x._row, 4).setValue('1970-01-01T00:00:00.000Z'));
-    return { reset: !!row };
+    return { reset: targets.length, defaultPin: DEFAULT_PIN };
   },
 };
+
+// ---------- 학생 비밀번호 헬퍼 ----------
+
+// 학생의 비밀번호 행 (없으면 아직 저장되지 않은 빈 행)
+function pinRow_(classCode, no) {
+  return rows_('StudentPins').find(r => r.classCode === classCode && r.studentNo === no) ||
+    { classCode, studentNo: no, salt: '', hash: '', fails: '0', lockedUntil: '', pin: '', mustChange: '' };
+}
+
+function checkPin_(row, pin) {
+  if ((!row.pin && !row.hash) || row.mustChange === '1') return pin === DEFAULT_PIN;
+  if (row.pin) return row.pin === pin;
+  return hash_(pin, row.salt) === row.hash; // 이전 버전
+}
+
+function savePinRow_(row, changes) {
+  Object.keys(changes).forEach(k => { row[k] = changes[k]; });
+  row.updatedAt = new Date().toISOString();
+  const data = SHEETS.StudentPins.map(k => String(row[k] == null ? '' : row[k]));
+  const sh = sheet_('StudentPins');
+  if (row._row) sh.getRange(row._row, 1, 1, data.length).setValues([data]);
+  else { sh.appendRow(data); row._row = sh.getLastRow(); }
+}
+
+function validateNewPin_(pin, pin2) {
+  pin = String(pin || '');
+  if (!/^\d{4}$/.test(pin)) fail_('새 비밀번호는 숫자 4자리로 정해 주세요.', 'BAD');
+  if (pin === DEFAULT_PIN) fail_(DEFAULT_PIN + '는 처음 비밀번호라서 쓸 수 없어요. 다른 숫자 4자리로 정해 주세요.', 'BAD');
+  if (pin !== String(pin2 || '')) fail_('새 비밀번호 두 개가 서로 다릅니다. 다시 입력해 주세요.', 'BAD');
+}
+
+function studentAuth_(req) {
+  const s = req.token && rows_('StudentSessions').find(r => r.token === req.token);
+  if (!s || s.expiresAt < new Date().toISOString()) fail_('다시 입장해 주세요.', 'AUTH');
+  return s;
+}
+
+function teacherClass_(req) {
+  const email = auth_(req);
+  const c = findClass_(req.classCode);
+  if (!c || c.teacherEmail !== email) fail_('학급을 찾을 수 없습니다.', 'NOT_FOUND');
+  return c;
+}
 
 // 한 달 동안 학생별 평균과 우수 학생 여부 (앱의 월별 우수 학생 계산과 같은 규칙)
 function monthStats_(records, cls, month) {
