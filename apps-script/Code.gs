@@ -19,6 +19,9 @@ const CONTACT_EMAIL = 'riolavie0516@naver.com';
 // 교사 로그인 유지 기간(일)
 const SESSION_DAYS = 30;
 
+// 서버 코드 버전. 앱이 이 값으로 서버 코드 업데이트가 필요한지 판단합니다.
+const SERVER_VERSION = 13;
+
 const SHEETS = {
   Teachers: ['email', 'name', 'salt', 'hash', 'createdAt'],
   Sessions: ['token', 'email', 'expiresAt'],
@@ -77,7 +80,7 @@ function ss_() {
 }
 
 function doGet() {
-  return out_({ ok: true, app: 'chaekim-plus', time: new Date().toISOString() });
+  return out_({ ok: true, app: 'chaekim-plus', version: SERVER_VERSION, time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -104,7 +107,7 @@ function doPost(e) {
 }
 
 const ACTIONS = {
-  ping: () => ({ time: new Date().toISOString() }),
+  ping: () => ({ time: new Date().toISOString(), version: SERVER_VERSION }),
 
   signup(req) {
     if (SIGNUP_CODE && req.signupCode !== SIGNUP_CODE) fail_('가입 코드가 올바르지 않습니다.', 'BAD');

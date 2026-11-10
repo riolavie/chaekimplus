@@ -49,7 +49,13 @@ async function api(action, data = {}, url = apiUrl()) {
   } catch (e) {
     throw new ApiError('서버 응답을 읽을 수 없습니다.', 'NETWORK');
   }
-  if (!json.ok) throw new ApiError(json.error || '서버 오류', json.code || 'SERVER');
+  if (!json.ok) {
+    // 서버에 예전 코드가 배포되어 새 기능을 모르는 경우
+    if (/^알 수 없는 요청/.test(json.error || '')) {
+      throw new ApiError('서버 코드가 예전 버전입니다. 선생님이 Apps Script를 최신 코드로 바꾸고 "새 버전"으로 다시 배포해야 합니다. (⚙️ 서버 연결 화면 참고)', 'OLD_SERVER');
+    }
+    throw new ApiError(json.error || '서버 오류', json.code || 'SERVER');
+  }
   return json;
 }
 

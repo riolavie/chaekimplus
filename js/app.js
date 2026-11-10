@@ -1,7 +1,7 @@
 'use strict';
 
 // 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
-const APP_VERSION = 'v13 (2026.11.10)';
+const APP_VERSION = 'v14 (2026.11.10)';
 
 const SCALE = CONFIG.SCALE; // 높은 점수부터
 const MAX_SCORE = Math.max(...SCALE.map(s => s.value));
@@ -281,7 +281,15 @@ async function checkServer() {
   let verdict;
   try {
     const r = await api('ping');
-    verdict = `<p class="notice">✅ 서버와 정상적으로 연결됩니다. (서버 시각 ${esc(r.time)})</p>`;
+    lines.push(`서버 코드 버전: ${r.version || '예전 버전'} (필요: ${CONFIG.SERVER_VERSION} 이상)`);
+    verdict = (r.version || 0) >= CONFIG.SERVER_VERSION
+      ? `<p class="notice">✅ 서버와 정상적으로 연결됩니다. (서버 시각 ${esc(r.time)})</p>`
+      : `<p class="notice warn">⚠️ 서버에는 연결되지만 <b>서버 코드가 예전 버전</b>이라 일부 기능(학생 입장 등)이 동작하지 않습니다.</p>
+        <ol class="small">
+          <li>⚙️ 서버 연결 화면의 <b>📋 서버 코드 복사</b>로 최신 코드를 복사합니다.</li>
+          <li>Apps Script 편집기의 코드를 모두 지우고 붙여넣은 뒤 <b>저장</b>합니다.</li>
+          <li><b>배포 → 배포 관리 → 수정(연필) → 버전: 새 버전 → 배포</b>를 누릅니다. (<b>새 배포</b>를 누르면 주소가 바뀌니 주의!)</li>
+        </ol>`;
   } catch (e) {
     lines.push(`오류: ${e.message} [${e.code}]`);
     verdict = `<p class="notice warn">❌ 서버에 연결하지 못했습니다.</p>
@@ -1167,7 +1175,8 @@ async function viewTeacherHome(refresh = true) {
   $app.querySelectorAll('[data-memo]').forEach(li => li.onclick = () =>
     viewRecords(classes.find(x => x.classCode === li.dataset.memo), 'list'));
 
-  api('ping').then(() => '✅ 연결됨', e => (isNetErr(e) && !navigator.onLine ? '오프라인' : '❌ 연결 안 됨'))
+  api('ping').then(r => ((r.version || 0) >= CONFIG.SERVER_VERSION ? '✅ 연결됨' : '⚠️ 서버 코드 업데이트 필요'),
+    e => (isNetErr(e) && !navigator.onLine ? '오프라인' : '❌ 연결 안 됨'))
     .then(t => { const el = document.getElementById('serverState'); if (el && seq === viewSeq) el.textContent = t; });
 
   if (!refresh) return;
