@@ -409,6 +409,22 @@ a.btn { text-decoration: none; }
 .memo-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .memo-feed p { margin: 4px 0 0; }
 
+.pin-input { letter-spacing: .5em; font-weight: 700; max-width: 160px; }
+.pin-reset { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+.pin-reset > span { flex: 1 1 220px; }
+.pin-reset select { width: auto; margin: 0; padding: 7px 10px; }
+.month-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.month-pills button { padding: 5px 12px; border-radius: 999px; font: inherit; font-size: .85rem; cursor: pointer; color: var(--muted); background: var(--bg); border: 1px solid var(--line); }
+.month-pills button.on { color: var(--brand-ink); background: var(--brand); border-color: var(--brand); }
+.my-summary { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; padding: 14px; border-radius: 12px; background: var(--bg); margin-bottom: 8px; }
+.my-score { display: flex; flex-direction: column; }
+.my-score b { font-size: 2rem; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.my-score b small { font-size: .9rem; color: var(--muted); font-weight: 500; }
+.my-dist .legend { margin: 6px 0 0; flex-wrap: wrap; }
+.badge-excellent { display: inline-block; margin: 0 0 6px; padding: 3px 10px; border-radius: 999px; font-weight: 700; font-size: .9rem; background: var(--mid-soft); color: var(--text); }
+.badge-excellent small { font-weight: 500; color: var(--muted); }
+.memo-text { margin: 4px 0 0; font-size: .9rem; }
+
 @media (max-width: 920px) {
   .dash { grid-template-columns: 1fr; }
   .tiles { grid-template-columns: repeat(2, 1fr); }
@@ -425,6 +441,7 @@ a.btn { text-decoration: none; }
   .task-row input[data-k=name] { flex: 1 1 100%; }
   .page-head { align-items: flex-start; flex-direction: column; }
   .welcome { padding: 18px; }
+  .my-summary { grid-template-columns: 1fr; gap: 8px; }
   .welcome .btn { width: 100%; }
   .class-card .class-top { flex-direction: column; }
   .class-code { align-items: flex-start; flex-direction: row; }

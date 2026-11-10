@@ -31,7 +31,14 @@ const SHEETS = {
   RoleHistory: ['classCode', 'month', 'changedAt', 'teacherEmail', 'assignments'],
   // 비밀번호 찾기 인증 코드 (해시로만 저장)
   Resets: ['email', 'codeHash', 'expiresAt', 'attempts', 'sentAt'],
+  // 학생 개인 비밀번호(숫자 4자리, 해시로만 저장)와 학생 로그인
+  StudentPins: ['classCode', 'studentNo', 'salt', 'hash', 'fails', 'lockedUntil', 'updatedAt'],
+  StudentSessions: ['token', 'classCode', 'studentNo', 'expiresAt'],
 };
+
+const STUDENT_SESSION_DAYS = 180;
+const PIN_MAX_FAILS = 5;     // 연속으로 틀리면
+const PIN_LOCK_MINUTES = 5;  // 이 시간 동안 잠금
 
 const RESET_MINUTES = 15;   // 인증 코드 유효 시간
 const RESET_MAX_TRIES = 5;  // 코드 입력 허용 횟수
@@ -198,6 +205,7 @@ const ACTIONS = {
     const settings = {
       evalTopN: clampInt_(c.evalTopN, 1, 30, 3),
       evalMinChecks: clampInt_(c.evalMinChecks, 0, 100, 3),
+      showMemos: !!c.showMemos,
     };
     const roleMonths = {};
     Object.keys(c.roleMonths || {}).forEach(m => {
@@ -270,7 +278,119 @@ const ACTIONS = {
       .map(r => { delete r._row; return r; });
     return { records };
   },
+
+  // 학생 입장: 반·번호·이름·학급 코드 + 개인 비밀번호(숫자 4자리)
+  // 비밀번호가 아직 없으면 needSetup 을 돌려주고, 확인값(pin2)과 함께 다시 오면 새로 정함
+  studentLogin(req) {
+    const c = findClass_(req.classCode);
+    if (!c) fail_('학급 코드를 찾을 수 없습니다.', 'NOT_FOUND');
+    const cls = toClass_(c);
+    const no = String(parseInt(req.number, 10));
+    const strip = v => String(v || '').replace(/\s/g, '');
+    if (cls.students.length) {
+      const st = cls.students.find(x => x.no === no);
+      if (!st) fail_('학급 명단에 ' + no + '번 학생이 없습니다. 번호를 확인해 주세요.', 'BAD');
+      if (st.name && strip(st.name) !== strip(req.name)) fail_(no + '번의 이름이 명단과 다릅니다. 번호와 이름을 확인해 주세요.', 'BAD');
+    }
+    const pin = String(req.pin || '');
+    const sh = sheet_('StudentPins');
+    const row = rows_('StudentPins').find(r => r.classCode === cls.classCode && r.studentNo === no);
+    const now = new Date();
+
+    if (!row || !row.hash) {
+      if (!req.pin2) return { needSetup: true };
+      if (!/^\d{4}$/.test(pin)) fail_('비밀번호는 숫자 4자리로 정해 주세요.', 'BAD');
+      if (pin !== String(req.pin2)) fail_('두 비밀번호가 서로 다릅니다. 다시 입력해 주세요.', 'BAD');
+      const salt = Utilities.getUuid();
+      const data = [cls.classCode, no, salt, hash_(pin, salt), '0', '', now.toISOString()];
+      if (row) sh.getRange(row._row, 1, 1, data.length).setValues([data]);
+      else sh.appendRow(data);
+    } else {
+      if (row.lockedUntil && row.lockedUntil > now.toISOString()) {
+        fail_('비밀번호를 여러 번 틀려 잠시 잠겼습니다. ' + PIN_LOCK_MINUTES + '분 뒤에 다시 해 보세요.', 'BAD');
+      }
+      if (hash_(pin, row.salt) !== row.hash) {
+        const fails = Number(row.fails || 0) + 1;
+        const lock = fails >= PIN_MAX_FAILS ? new Date(now.getTime() + PIN_LOCK_MINUTES * 60000).toISOString() : '';
+        sh.getRange(row._row, 5, 1, 2).setValues([[String(fails >= PIN_MAX_FAILS ? 0 : fails), lock]]);
+        fail_('비밀번호가 맞지 않습니다.' + (lock ? ' 잠시 잠겼습니다. ' + PIN_LOCK_MINUTES + '분 뒤에 다시 해 보세요.'
+          : ' (남은 기회 ' + (PIN_MAX_FAILS - fails) + '번) 잊었다면 선생님께 초기화를 부탁하세요.'), 'BAD');
+      }
+      if (row.fails !== '0' || row.lockedUntil) sh.getRange(row._row, 5, 1, 2).setValues([['0', '']]);
+    }
+    const token = Utilities.getUuid() + Utilities.getUuid().replace(/-/g, '');
+    const expires = new Date(now.getTime() + STUDENT_SESSION_DAYS * 86400000).toISOString();
+    sheet_('StudentSessions').appendRow([token, cls.classCode, no, expires]);
+    delete cls.teacherEmail;
+    delete cls.roleMonths;
+    return { token, config: cls, created: !row || !row.hash };
+  },
+
+  // 학생: 내가 받은 평가 (평가자는 숨기고, 메모는 선생님이 허용한 경우에만)
+  myRecords(req) {
+    const s = req.token && rows_('StudentSessions').find(r => r.token === req.token);
+    if (!s || s.expiresAt < new Date().toISOString()) fail_('다시 입장해 주세요.', 'AUTH');
+    const c = findClass_(s.classCode);
+    if (!c) fail_('학급을 찾을 수 없습니다.', 'NOT_FOUND');
+    const cls = toClass_(c);
+    const all = rows_('Records').filter(r => r.classCode === cls.classCode);
+    const mine = all.filter(r => r.studentNo === s.studentNo);
+    const months = [];
+    mine.forEach(r => { const m = r.date.slice(0, 7); if (months.indexOf(m) < 0) months.push(m); });
+    return {
+      showMemos: cls.showMemos,
+      records: mine.map(r => ({
+        date: r.date, taskName: r.taskName, score: Number(r.score),
+        memo: cls.showMemos ? r.memo : '', inspectedAt: r.inspectedAt,
+      })),
+      months: months.sort().map(m => {
+        const st = monthStats_(all, cls, m).find(x => x.no === s.studentNo) || {};
+        return { month: m, excellent: !!st.excellent };
+      }),
+    };
+  },
+
+  // 교사: 학생 개인 비밀번호 초기화 (학생은 다음 입장 때 새로 정함)
+  resetStudentPin(req) {
+    const email = auth_(req);
+    const c = findClass_(req.classCode);
+    if (!c || c.teacherEmail !== email) fail_('학급을 찾을 수 없습니다.', 'NOT_FOUND');
+    const no = String(parseInt(req.studentNo, 10));
+    const row = rows_('StudentPins').find(r => r.classCode === c.classCode && r.studentNo === no);
+    if (row) sheet_('StudentPins').getRange(row._row, 3, 1, 5).setValues([['', '', '0', '', new Date().toISOString()]]);
+    const sessions = sheet_('StudentSessions');
+    rows_('StudentSessions').filter(x => x.classCode === c.classCode && x.studentNo === no)
+      .forEach(x => sessions.getRange(x._row, 4).setValue('1970-01-01T00:00:00.000Z'));
+    return { reset: !!row };
+  },
 };
+
+// 한 달 동안 학생별 평균과 우수 학생 여부 (앱의 월별 우수 학생 계산과 같은 규칙)
+function monthStats_(records, cls, month) {
+  const map = {};
+  records.filter(r => r.date.indexOf(month) === 0).forEach(r => {
+    const v = Number(r.score);
+    if (!v) return;
+    const m = map[r.studentNo] || (map[r.studentNo] = { no: r.studentNo, total: 0, sum: 0, top: 0 });
+    m.total++;
+    m.sum += v;
+    if (v === 5) m.top++;
+  });
+  const rows = Object.keys(map).map(k => {
+    const m = map[k];
+    m.avg = m.sum / m.total;
+    m.eligible = m.total >= cls.evalMinChecks;
+    return m;
+  });
+  rows.sort((a, b) => (b.eligible - a.eligible) || (b.avg - a.avg) || (b.top - a.top) || (b.total - a.total) || (a.no - b.no));
+  rows.forEach((m, i) => {
+    const p = rows[i - 1];
+    if (!m.eligible) { m.rank = null; return; }
+    m.rank = p && p.eligible && Math.abs(p.avg - m.avg) < 1e-9 && p.top === m.top ? p.rank : i + 1;
+    m.excellent = m.rank <= cls.evalTopN;
+  });
+  return rows;
+}
 
 // ---------- 헬퍼 ----------
 
@@ -383,6 +503,7 @@ function toClass_(r) {
     tasks: parseJson_(r.tasksJson, []),
     evalTopN: settings.evalTopN || 3,
     evalMinChecks: settings.evalMinChecks == null ? 3 : settings.evalMinChecks,
+    showMemos: !!settings.showMemos,
     rolesChangedAt: r.rolesChangedAt || '',
     roleMonths: parseJson_(r.roleMonthsJson, {}),
     updatedAt: r.updatedAt,

@@ -1,7 +1,7 @@
 'use strict';
 
 // 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
-const APP_VERSION = 'v11 (2026.11.09)';
+const APP_VERSION = 'v12 (2026.11.10)';
 
 const SCALE = CONFIG.SCALE; // 높은 점수부터
 const MAX_SCORE = Math.max(...SCALE.map(s => s.value));
@@ -474,12 +474,22 @@ async function viewStudentLogin() {
         <label>이름<input name="name" required placeholder="예: 김하늘" value="${esc(prev.name)}"></label>
       </div>
       <label>학급 코드<input name="code" required placeholder="선생님이 알려준 코드" class="code-input" value="${esc(prev.classCode)}"></label>
+      <label>개인 비밀번호 <span class="muted small">(숫자 4자리)</span>
+        <input name="pin" type="password" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" class="pin-input" placeholder="••••">
+        <span class="hint" id="pinHint">처음 입장하면 나만 아는 비밀번호를 새로 정해요.</span>
+      </label>
+      <label id="pin2Wrap" hidden>비밀번호 확인 <span class="muted small">(한 번 더)</span>
+        <input name="pin2" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" class="pin-input" placeholder="••••">
+      </label>
       <p class="form-error" hidden></p>
       <button class="btn primary block">입장하기</button>
       <button type="button" class="link" id="back">← 처음으로</button>
     </form>`);
   const f = document.getElementById('f');
+  const pin2Wrap = f.querySelector('#pin2Wrap');
   f.querySelector('#back').onclick = viewHome;
+  // 학생 정보를 바꾸면 비밀번호 확인 단계를 처음부터
+  ['classNo', 'number', 'name', 'code'].forEach(n => f[n].addEventListener('input', () => { pin2Wrap.hidden = true; f.pin2.required = false; }));
   f.onsubmit = e => {
     e.preventDefault();
     busy(f.querySelector('.primary'), async () => {
@@ -490,30 +500,47 @@ async function viewStudentLogin() {
         name: f.name.value.trim(),
         classCode: f.code.value.trim().toUpperCase(),
       };
-      let cfg;
+      const pin = f.pin.value;
+      const authKey = `studentAuth:${s.classCode}:${s.number}`;
+      let r;
       try {
-        cfg = (await api('getClassConfig', { classCode: s.classCode })).config;
-        await DB.set('config:' + s.classCode, cfg);
+        r = await api('studentLogin', { classCode: s.classCode, number: s.number, name: s.name, pin,
+          pin2: pin2Wrap.hidden ? '' : f.pin2.value });
       } catch (err) {
         if (!isNetErr(err)) return formError(f, err.message);
-        cfg = await DB.get('config:' + s.classCode);
-        if (!cfg) return formError(f, '이 기기에서 처음 입장할 때는 인터넷 연결이 필요합니다. (학급 정보를 내려받아야 해요)');
+        // 오프라인: 이 기기에서 입장한 적이 있으면 저장된 확인값으로 입장
+        const a = await DB.get(authKey);
+        const cfg = await DB.get('config:' + s.classCode);
+        if (!a || !cfg) return formError(f, '이 기기에서 처음 입장할 때는 인터넷 연결이 필요합니다.');
+        if (a.name.replace(/\s/g, '') !== s.name.replace(/\s/g, '') || await pbkdf2(pin, a.salt) !== a.verifier) {
+          return formError(f, '이름이나 비밀번호가 맞지 않습니다.');
+        }
+        return enterStudent({ ...s, token: a.token });
       }
-      cfg = normClass(clone(cfg));
-      if (cfg.students.length) {
-        const name = studentName(cfg, s.number);
-        if (!cfg.students.some(x => x.no === s.number)) return formError(f, `학급 명단에 ${s.number}번 학생이 없습니다. 번호를 확인해 주세요.`);
-        if (name && name.replace(/\s/g, '') !== s.name.replace(/\s/g, '')) return formError(f, `${s.number}번의 이름이 명단과 다릅니다. 번호와 이름을 확인해 주세요.`);
+      if (r.needSetup) {
+        pin2Wrap.hidden = false;
+        f.pin2.required = true;
+        f.querySelector('#pinHint').textContent = '처음 입장했어요. 방금 입력한 비밀번호를 한 번 더 입력해 주세요. 잊지 않도록 꼭 기억하세요!';
+        f.pin2.focus();
+        return;
       }
-      state.student = s;
-      state.teacher = null;
-      await DB.del('teacherSession');
-      await DB.set('studentSession', s);
-      await DB.set('lastStudent', s);
-      renderUser();
-      viewStudent();
+      await DB.set('config:' + s.classCode, r.config);
+      const salt = uid();
+      await DB.set(authKey, { name: s.name, token: r.token, salt, verifier: await pbkdf2(pin, salt) });
+      if (r.created) toast('비밀번호를 정했어요. 다음부터 이 비밀번호로 입장해요.', 'ok');
+      await enterStudent({ ...s, token: r.token });
     });
   };
+}
+
+async function enterStudent(s) {
+  state.student = s;
+  state.teacher = null;
+  await DB.del('teacherSession');
+  await DB.set('studentSession', s);
+  await DB.set('lastStudent', { classNo: s.classNo, number: s.number, name: s.name, classCode: s.classCode });
+  renderUser();
+  viewStudent();
 }
 
 const historyKey = (code, number) => `history:${code}:${number}`;
@@ -521,9 +548,10 @@ const historyKey = (code, number) => `history:${code}:${number}`;
 async function viewStudent() {
   const s = state.student;
   const raw = await DB.get('config:' + s.classCode);
-  if (!raw) return viewStudentLogin();
+  if (!raw || !s.token) return viewStudentLogin(); // 개인 비밀번호 도입 전 입장 기록이면 다시 입장
   const cfg = normClass(clone(raw));
   const isInspector = cfg.inspectors.includes(s.number);
+  const myEval = '<section class="card" id="myEval"><h3>나의 평가</h3><div id="myEvalBody"><p class="muted">불러오는 중…</p></div></section>';
   const myTasks = cfg.tasks.filter(t => t.assigneeNos.includes(s.number));
 
   const seq = render(`
@@ -538,9 +566,9 @@ async function viewStudent() {
         <b>${myTasks.length ? myTasks.map(t => esc(t.name)).join(', ') : '없음'}</b></div>
       ${isInspector ? '<span class="status sent">검사 담당</span>' : ''}
     </section>
-    ${isInspector ? inspectFormHtml(cfg, s.number) : `
+    ${isInspector ? inspectFormHtml(cfg, s.number) + myEval : `${myEval}
       <p class="notice">평가는 선생님이 지정한 검사 담당 학생만 할 수 있어요.</p>`}
-    ${isInspector ? '<section class="card"><h3>이 기기의 평가 기록</h3><div id="history"></div></section>' : ''}
+    ${isInspector ? '<section class="card"><h3>내가 입력한 평가 (이 기기)</h3><div id="history"></div></section>' : ''}
     <section class="card">
       <h3>학급 전체 역할</h3>
       <ul class="list">${cfg.tasks.map(t => `<li><b>${esc(t.name)}${t.inspector ? ' <span class="tag">검사</span>' : ''}</b>
@@ -551,6 +579,7 @@ async function viewStudent() {
     bindInspectForm(cfg);
     renderHistory();
   }
+  loadMyRecords(seq);
 
   // 온라인이면 학급 정보(역할 배정 등) 최신화. 평가 입력 중이 아닐 때만 화면 갱신
   api('getClassConfig', { classCode: s.classCode }).then(async r => {
@@ -561,6 +590,83 @@ async function viewStudent() {
       viewStudent();
     }
   }).catch(() => {});
+}
+
+// ---------- 학생: 나의 평가 ----------
+
+async function loadMyRecords(seq) {
+  const s = state.student;
+  const key = `myrecs:${s.classCode}:${s.number}`;
+  let data = await DB.get(key);
+  let month = null;
+  const draw = () => {
+    if (seq !== viewSeq || !document.getElementById('myEvalBody')) return;
+    month = drawMyRecords(data, month, m => { month = m; draw(); });
+  };
+  draw();
+  try {
+    const r = await api('myRecords', { token: s.token });
+    data = { ...r, fetchedAt: Date.now() };
+    await DB.set(key, data);
+    draw();
+  } catch (e) {
+    const el = document.getElementById('myEvalBody');
+    if (!el || seq !== viewSeq) return;
+    if (e.code === 'AUTH') {
+      el.innerHTML = '<p class="notice warn">비밀번호가 초기화되었거나 입장 기간이 지났어요. 다시 입장해 주세요.</p><button class="btn" id="reLogin">다시 입장하기</button>';
+      el.querySelector('#reLogin').onclick = logout;
+    } else if (!data) {
+      el.innerHTML = '<p class="muted">인터넷에 연결되면 나의 평가를 볼 수 있어요.</p>';
+    }
+  }
+}
+
+function drawMyRecords(data, month, onMonth) {
+  const el = document.getElementById('myEvalBody');
+  if (!data) return month;
+  const recs = data.records || [];
+  if (!recs.length) {
+    el.innerHTML = '<p class="muted">아직 받은 평가가 없어요. 역할을 열심히 해 봐요! 💪</p>';
+    return month;
+  }
+  const thisMonth = localDate().slice(0, 7);
+  const months = [...new Set(recs.map(r => r.date.slice(0, 7)))].sort().reverse();
+  if (!month || !months.includes(month)) month = months.includes(thisMonth) ? thisMonth : months[0];
+  const rs = recs.filter(r => r.date.startsWith(month)).sort((a, b) => (b.date + b.inspectedAt).localeCompare(a.date + a.inspectedAt));
+  const cnt = {};
+  rs.forEach(r => { cnt[r.score] = (cnt[r.score] || 0) + 1; });
+  const avg = rs.reduce((a, r) => a + Number(r.score), 0) / rs.length;
+  const info = (data.months || []).find(m => m.month === month) || {};
+  const monthAvg = m => {
+    const x = recs.filter(r => r.date.startsWith(m));
+    return { n: x.length, avg: x.reduce((a, r) => a + Number(r.score), 0) / x.length };
+  };
+
+  el.innerHTML = `
+    ${months.length > 1 ? `<div class="month-pills">${months.map(m => `<button class="${m === month ? 'on' : ''}" data-m="${m}">${Number(m.slice(5))}월</button>`).join('')}</div>` : ''}
+    <div class="my-summary">
+      <div class="my-score"><span class="muted small">${monthLabel(month)} 평균</span>
+        <b>${avg.toFixed(2)}<small> / ${MAX_SCORE}</small></b>
+        <span class="muted small">평가 ${rs.length}회</span></div>
+      <div class="my-dist">
+        ${info.excellent ? `<p class="badge-excellent">🏆 ${Number(month.slice(5))}월 우수 학생${month === thisMonth ? ' <small>(지금까지 기준)</small>' : ''}</p>` : ''}
+        ${stackBar(cnt, rs.length)}
+        ${scaleLegend()}
+      </div>
+    </div>
+    <ul class="list my-list">${rs.map(r => `<li>
+      <div><b>${esc(r.date.slice(5).replace('-', '/'))}</b> <span class="muted small">${esc(r.taskName)}</span>
+        ${r.memo ? `<p class="memo-text">💬 ${esc(r.memo)}</p>` : ''}</div>
+      ${scorePill(r.score)}</li>`).join('')}</ul>
+    ${months.length > 1 ? `<h4>월별 기록</h4><ul class="list compact">${months.map(m => {
+      const x = monthAvg(m);
+      const ex = ((data.months || []).find(y => y.month === m) || {}).excellent;
+      return `<li><span>${monthLabel(m)} ${ex ? '🏆' : ''}</span><span class="muted small">평가 ${x.n}회 · 평균 <b>${x.avg.toFixed(2)}</b></span></li>`;
+    }).join('')}</ul>` : ''}
+    <p class="muted small">평가한 친구는 공개되지 않아요.${data.showMemos ? '' : ' 메모는 선생님만 볼 수 있어요.'}
+      ${data.fetchedAt ? `<br>${fmtTime(data.fetchedAt)} 기준` : ''}</p>`;
+  el.querySelectorAll('[data-m]').forEach(b => b.onclick = () => onMonth(b.dataset.m));
+  return month;
 }
 
 function inspectFormHtml(cfg, myNo) {
@@ -1108,6 +1214,7 @@ function viewSetup(orig, startStep = 1) {
     if (step === 4) {
       cls.evalTopN = Math.max(1, Number($body.querySelector('[name=evalTopN]').value) || 3);
       cls.evalMinChecks = Math.max(0, Number($body.querySelector('[name=evalMinChecks]').value) || 0);
+      cls.showMemos = $body.querySelector('[name=showMemos]').checked;
     }
     return '';
   }
@@ -1155,7 +1262,14 @@ function viewSetup(orig, startStep = 1) {
         <textarea name="roster" rows="12" placeholder="한 줄에 한 명씩: 번호 이름&#10;1 김하늘&#10;2 이바다&#10;3 박구름">${esc(cls.students.map(s => `${s.no} ${s.name}`).join('\n'))}</textarea>
         <span class="hint">엑셀·나이스에서 번호·이름 두 열을 복사해 붙여넣어도 됩니다. 명단에 있는 학생만 입장할 수 있어요.</span>
       </label>
-      <p class="muted small" id="rosterCount"></p>`;
+      <p class="muted small" id="rosterCount"></p>
+      ${isNew ? '' : `<div class="pin-reset">
+        <span><b>🔑 학생 개인 비밀번호 초기화</b><br><span class="muted small">비밀번호를 잊은 학생은 초기화하면 다음 입장 때 새로 정합니다.</span></span>
+        <select id="pinNo">${cls.students.map(s => `<option value="${esc(s.no)}">${esc(s.no)}번 ${esc(s.name)}</option>`).join('')}</select>
+        <button type="button" class="btn sm" id="pinReset">초기화</button>
+      </div>`}`;
+    const pr = $body.querySelector('#pinReset');
+    if (pr) pr.onclick = () => resetStudentPin(cls, $body.querySelector('#pinNo').value);
     const ta = $body.querySelector('[name=roster]');
     const count = () => {
       const { students, bad } = parseRoster(ta.value);
@@ -1303,6 +1417,9 @@ function viewSetup(orig, startStep = 1) {
         <label>최소 평가 횟수<input name="evalMinChecks" type="number" min="0" max="100" value="${cls.evalMinChecks}">
           <span class="hint">한 달에 이 횟수 이상 평가받은 학생만 선정</span></label>
       </div>
+      <h3>학생 화면 공개</h3>
+      <p class="hint">학생은 자기 화면의 <b>나의 평가</b>에서 날짜별 점수와 월 평균, 우수 학생 선정 여부를 볼 수 있습니다. 평가한 친구는 공개되지 않습니다.</p>
+      <label class="check"><input type="checkbox" name="showMemos" ${cls.showMemos ? 'checked' : ''}> 친구들이 남긴 메모도 학생에게 보여주기</label>
       <h3>세팅 요약</h3>
       <ul class="list">
         <li><b>학급</b><span>${esc(cls.className)} · 코드 <b>${esc(cls.classCode)}</b></span></li>
@@ -1365,7 +1482,20 @@ function showStudentDetail(cls, records, no, month) {
       <tbody>${rows.map(r => `<tr><td class="nowrap">${esc(r.date.slice(5))}</td><td>${esc(r.taskName)}</td>
         <td class="nowrap">${scorePill(r.score)}</td><td>${esc(r.memo)}</td>
         <td class="nowrap">${esc(r.inspectorNo)}번 ${esc(r.inspectorName)}</td></tr>`).join('')}</tbody>
-    </table></div>`);
+    </table></div>
+    <div class="actions left"><button class="btn sm ghost" id="pinResetDlg">🔑 이 학생 개인 비밀번호 초기화</button></div>`);
+  $dialog.querySelector('#pinResetDlg').onclick = () => resetStudentPin(cls, no);
+}
+
+async function resetStudentPin(cls, no) {
+  if (!confirm(`${studentLabel(cls, no)} 학생의 개인 비밀번호를 초기화할까요?\n학생은 다음에 입장할 때 새 비밀번호를 정합니다.`)) return;
+  try {
+    const r = await api('resetStudentPin', { token: state.teacher.token, classCode: cls.classCode, studentNo: no });
+    toast(r.reset ? `${studentLabel(cls, no)} 학생의 비밀번호를 초기화했습니다.` : '아직 비밀번호를 정하지 않은 학생입니다.', 'ok');
+  } catch (e) {
+    if (e.code === 'AUTH') Sync.onAuthNeeded();
+    else toast(isNetErr(e) ? '인터넷에 연결된 상태에서 초기화할 수 있어요.' : e.message, 'warn');
+  }
 }
 
 async function viewRecords(cls, tab = 'eval') {
