@@ -13,6 +13,11 @@
 // 예: const SIGNUP_CODE = 'our-school-2026';
 const SIGNUP_CODE = '';
 
+// 최고 관리자 교사 아이디(이메일 형식). 새로 가입한 교사는 관리자가 승인해야 로그인할 수 있습니다.
+// 여러 명이면 쉼표로: ['admin@school.kr', 'vice@school.kr']
+// 비워두면 이 서버에 가장 먼저 가입한 교사가 관리자가 됩니다.
+const ADMIN_EMAILS = [];
+
 // 문의처 (비밀번호 찾기 메일 등에 표시)
 const CONTACT_EMAIL = 'riolavie0516@naver.com';
 
@@ -20,10 +25,11 @@ const CONTACT_EMAIL = 'riolavie0516@naver.com';
 const SESSION_DAYS = 30;
 
 // 서버 코드 버전. 앱이 이 값으로 서버 코드 업데이트가 필요한지 판단합니다.
-const SERVER_VERSION = 13;
+const SERVER_VERSION = 14;
 
 const SHEETS = {
-  Teachers: ['email', 'name', 'salt', 'hash', 'createdAt'],
+  // status: '' 또는 approved = 승인됨, pending = 승인 대기, rejected = 거절됨
+  Teachers: ['email', 'name', 'salt', 'hash', 'createdAt', 'status', 'decidedAt', 'decidedBy'],
   Sessions: ['token', 'email', 'expiresAt'],
   Classes: ['classCode', 'className', 'teacherEmail', 'inspectors', 'tasksJson', 'updatedAt',
             'studentsJson', 'settingsJson', 'rolesChangedAt', 'roleMonthsJson'],
@@ -118,15 +124,27 @@ const ACTIONS = {
     if (String(req.password || '').length < 6) fail_('비밀번호는 6자 이상이어야 합니다.', 'BAD');
     if (findTeacher_(email)) fail_('이미 가입된 아이디입니다.', 'BAD');
     const salt = Utilities.getUuid();
-    sheet_('Teachers').appendRow([email, name, salt, hash_(req.password, salt), new Date().toISOString()]);
-    return { email, name, token: newSession_(email), classes: [] };
+    const now = new Date().toISOString();
+    // 관리자 본인(또는 서버의 첫 교사)은 바로 승인, 그 밖에는 승인 대기
+    const first = rows_('Teachers').length === 0;
+    const auto = first || ADMIN_EMAILS.map(normEmail_).indexOf(email) >= 0;
+    sheet_('Teachers').appendRow([email, name, salt, hash_(req.password, salt), now,
+      auto ? 'approved' : 'pending', auto ? now : '', auto ? 'auto' : '']);
+    if (!auto) {
+      notifyAdmins_('[책임플러스] 교사 가입 승인 요청: ' + name,
+        name + ' 선생님(' + email + ')이 가입을 신청했습니다.\n앱에서 교사로 로그인한 뒤 「교사 가입 관리」에서 승인 또는 거절해 주세요.' +
+        (req.appUrl ? '\n\n앱 주소: ' + req.appUrl : ''));
+      return { pending: true, email, name };
+    }
+    return { email, name, token: newSession_(email), classes: [], isAdmin: isAdmin_(email) };
   },
 
   login(req) {
     const email = normEmail_(req.email);
     const t = findTeacher_(email);
     if (!t || hash_(req.password, t.salt) !== t.hash) fail_('아이디 또는 비밀번호가 올바르지 않습니다.', 'BAD');
-    return { email, name: t.name, token: newSession_(email), classes: classesOf_(email) };
+    checkApproved_(t);
+    return { email, name: t.name, token: newSession_(email), classes: classesOf_(email), isAdmin: isAdmin_(email) };
   },
 
   // 비밀번호 찾기 1단계: 가입된 이메일이면 6자리 인증 코드를 메일로 보냄
@@ -175,11 +193,52 @@ const ACTIONS = {
     sh.getRange(r._row, 2).setValue(''); // 코드는 한 번만 사용
     setPassword_(email, req.password);
     const t = findTeacher_(email);
-    return { email, name: t.name, token: newSession_(email), classes: classesOf_(email) };
+    checkApproved_(t);
+    return { email, name: t.name, token: newSession_(email), classes: classesOf_(email), isAdmin: isAdmin_(email) };
   },
 
   listClasses(req) {
-    return { classes: classesOf_(auth_(req)) };
+    const email = auth_(req);
+    return { classes: classesOf_(email), isAdmin: isAdmin_(email) };
+  },
+
+  // 관리자: 교사 목록과 가입 신청
+  adminListTeachers(req) {
+    adminAuth_(req);
+    const classes = rows_('Classes');
+    return {
+      teachers: rows_('Teachers').map(t => {
+        const mine = classes.filter(c => c.teacherEmail === t.email);
+        return {
+          email: t.email, name: t.name, createdAt: t.createdAt, status: t.status || 'approved',
+          decidedAt: t.decidedAt || '', isAdmin: isAdmin_(t.email), classes: mine.length,
+          students: mine.reduce((a, c) => a + parseJson_(c.studentsJson, []).length, 0),
+        };
+      }),
+    };
+  },
+
+  // 관리자: 가입 승인 / 거절
+  adminSetTeacherStatus(req) {
+    const admin = adminAuth_(req);
+    const status = req.status === 'approved' ? 'approved' : req.status === 'rejected' ? 'rejected' : '';
+    if (!status) fail_('잘못된 요청입니다.', 'BAD');
+    const t = findTeacher_(normEmail_(req.email));
+    if (!t) fail_('교사를 찾을 수 없습니다.', 'NOT_FOUND');
+    if (isAdmin_(t.email)) fail_('관리자 계정의 상태는 바꿀 수 없습니다.', 'BAD');
+    sheet_('Teachers').getRange(t._row, 6, 1, 3).setValues([[status, new Date().toISOString(), admin]]);
+    if (status === 'rejected') {
+      const sessions = sheet_('Sessions');
+      rows_('Sessions').filter(x => x.email === t.email)
+        .forEach(x => sessions.getRange(x._row, 3).setValue('1970-01-01T00:00:00.000Z'));
+    }
+    try {
+      MailApp.sendEmail(t.email, '[책임플러스] 교사 가입 ' + (status === 'approved' ? '승인 안내' : '결과 안내'),
+        t.name + ' 선생님, 안녕하세요.\n\n' + (status === 'approved'
+          ? '책임플러스 교사 가입이 승인되었습니다. 이제 로그인할 수 있습니다.' + (req.appUrl ? '\n앱 주소: ' + req.appUrl : '')
+          : '책임플러스 교사 가입 신청이 승인되지 않았습니다.') + '\n\n문의: ' + CONTACT_EMAIL);
+    } catch (e) { /* 아이디가 실제 메일 주소가 아니면 생략 */ }
+    return { email: t.email, status };
   },
 
   saveClass(req) {
@@ -525,6 +584,32 @@ function hash_(password, salt) {
       Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, h + salt, Utilities.Charset.UTF_8));
   }
   return h;
+}
+
+// 관리자: ADMIN_EMAILS, 비어 있으면 가장 먼저 가입한 교사
+function isAdmin_(email) {
+  const list = ADMIN_EMAILS.map(normEmail_).filter(Boolean);
+  if (list.length) return list.indexOf(email) >= 0;
+  const first = rows_('Teachers')[0];
+  return !!first && first.email === email;
+}
+
+function adminAuth_(req) {
+  const email = auth_(req);
+  if (!isAdmin_(email)) fail_('관리자만 사용할 수 있습니다.', 'FORBIDDEN');
+  return email;
+}
+
+function checkApproved_(t) {
+  if (t.status === 'pending') fail_('가입 승인을 기다리는 중입니다. 관리자가 승인하면 로그인할 수 있어요.', 'PENDING');
+  if (t.status === 'rejected') fail_('가입이 승인되지 않은 계정입니다. 관리자에게 문의해 주세요. (' + CONTACT_EMAIL + ')', 'BAD');
+}
+
+function notifyAdmins_(subject, body) {
+  const list = ADMIN_EMAILS.length ? ADMIN_EMAILS : rows_('Teachers').slice(0, 1).map(t => t.email);
+  list.forEach(to => {
+    try { MailApp.sendEmail(to, subject, body); } catch (e) { /* 메일 주소가 아니면 생략 */ }
+  });
 }
 
 function findTeacher_(email) {

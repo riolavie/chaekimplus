@@ -1,7 +1,7 @@
 'use strict';
 
 // 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
-const APP_VERSION = 'v14 (2026.11.10)';
+const APP_VERSION = 'v15 (2026.11.11)';
 
 const SCALE = CONFIG.SCALE; // 높은 점수부터
 const MAX_SCORE = Math.max(...SCALE.map(s => s.value));
@@ -875,23 +875,38 @@ function viewTeacherLogin(signup = false) {
       let r;
       try {
         r = signup
-          ? await api('signup', { email, password, name: f.name.value.trim(), signupCode: f.signupCode.value.trim() })
+          ? await api('signup', { email, password, name: f.name.value.trim(), signupCode: f.signupCode.value.trim(), appUrl: appAddress() })
           : await api('login', { email, password });
       } catch (err) {
         if (signup || !isNetErr(err)) return formError(f, err.message);
         return offlineLogin(f, email, password);
       }
+      if (r.pending) return viewSignupPending(r);
       await finishOnlineLogin(email, password, r);
     });
   };
 }
 
+const appAddress = () => `${location.origin}${location.pathname}`;
+
+function viewSignupPending(r) {
+  render(`
+    <section class="card narrow center">
+      <p class="role-icon">📨</p>
+      <h2>가입 신청이 완료되었습니다</h2>
+      <p>${esc(r.name)} 선생님(${esc(r.email)})의 가입 신청을 관리자에게 보냈습니다.</p>
+      <p class="muted">관리자가 승인하면 로그인할 수 있어요. 승인되면 아이디로 안내 메일이 갑니다.</p>
+      <button class="btn primary" id="toLogin">로그인 화면으로</button>
+    </section>`);
+  document.getElementById('toLogin').onclick = () => viewTeacherLogin();
+}
+
 // 온라인 로그인 성공: 오프라인 로그인용 확인값을 이 기기에 저장
 async function finishOnlineLogin(email, password, r) {
   const salt = uid();
-  await DB.set('teacherAuth:' + email, { email, name: r.name, token: r.token, salt, verifier: await pbkdf2(password, salt) });
+  await DB.set('teacherAuth:' + email, { email, name: r.name, token: r.token, isAdmin: !!r.isAdmin, salt, verifier: await pbkdf2(password, salt) });
   await DB.set('classes:' + email, r.classes);
-  await startTeacher({ email, name: r.name, token: r.token });
+  await startTeacher({ email, name: r.name, token: r.token, isAdmin: !!r.isAdmin });
 }
 
 // 비밀번호 찾기: ① 아이디(이메일)로 인증 코드 받기 → ② 코드 + 새 비밀번호
@@ -973,7 +988,7 @@ async function offlineLogin(f, email, password) {
   if (!a) return formError(f, '인터넷에 연결할 수 없습니다. 이 기기에서 처음 로그인할 때는 인터넷이 필요합니다.');
   if (await pbkdf2(password, a.salt) !== a.verifier) return formError(f, '아이디 또는 비밀번호가 올바르지 않습니다.');
   toast('오프라인으로 로그인했습니다.');
-  await startTeacher({ email, name: a.name, token: a.token });
+  await startTeacher({ email, name: a.name, token: a.token, isAdmin: !!a.isAdmin });
 }
 
 async function startTeacher(session) {
@@ -1083,7 +1098,7 @@ async function viewTeacherHome(refresh = true) {
       <div>
         <p class="eyebrow">${esc(today)}</p>
         <h1>${esc(state.teacher.name)} 선생님, 안녕하세요 👋</h1>
-        <div class="welcome-stats">
+        <div class="welcome-stats" id="welcomeStats">
           <span>학급 <b>${classes.length}</b></span>
           <span>학생 <b>${totalStudents}</b>명</span>
           <span>이번 달 평가 <b>${monthCount}</b>건</span>
@@ -1126,6 +1141,11 @@ async function viewTeacherHome(refresh = true) {
       </div>
 
       <aside class="dash-side">
+        ${state.teacher.isAdmin ? `<section class="card admin-card">
+          <h3>👑 교사 가입 관리</h3>
+          <p class="muted small" id="adminSummary">가입 신청을 확인하는 중…</p>
+          <button class="btn sm primary" id="goAdmin">관리하기</button>
+        </section>` : ''}
         <section class="card">
           <h3>학생 입장 안내</h3>
           <p class="muted small">학생에게 아래 앱 주소와 학급 코드를 알려주세요. 처음 한 번만 인터넷이 필요합니다.</p>
@@ -1179,9 +1199,32 @@ async function viewTeacherHome(refresh = true) {
     e => (isNetErr(e) && !navigator.onLine ? '오프라인' : '❌ 연결 안 됨'))
     .then(t => { const el = document.getElementById('serverState'); if (el && seq === viewSeq) el.textContent = t; });
 
+  if (state.teacher.isAdmin) {
+    document.getElementById('goAdmin').onclick = viewAdmin;
+    api('adminListTeachers', { token: state.teacher.token }).then(r => {
+      const n = r.teachers.filter(x => x.status === 'pending').length;
+      const el = document.getElementById('adminSummary');
+      if (!el || seq !== viewSeq) return;
+      el.innerHTML = n ? `<b class="danger">승인 대기 ${n}명</b> · 전체 교사 ${r.teachers.length}명`
+        : `승인 대기 없음 · 전체 교사 ${r.teachers.length}명`;
+      if (n) document.getElementById('welcomeStats').insertAdjacentHTML('beforeend',
+        `<span class="alert-chip" id="pendingChip">👑 가입 승인 대기 <b>${n}</b>명</span>`);
+      const chip = document.getElementById('pendingChip');
+      if (chip) chip.onclick = viewAdmin;
+    }).catch(() => {
+      const el = document.getElementById('adminSummary');
+      if (el) el.textContent = '인터넷에 연결되면 가입 신청을 확인할 수 있어요.';
+    });
+  }
+
   if (!refresh) return;
   try {
     const r = await api('listClasses', { token: state.teacher.token });
+    if (!!r.isAdmin !== !!state.teacher.isAdmin) {
+      state.teacher = { ...state.teacher, isAdmin: !!r.isAdmin };
+      await DB.set('teacherSession', state.teacher);
+      if (seq === viewSeq) return viewTeacherHome();
+    }
     const before = JSON.stringify((await DB.get('classes:' + state.teacher.email)) || []);
     await DB.set('classes:' + state.teacher.email, r.classes);
     let changed = before !== JSON.stringify(r.classes);
@@ -1196,6 +1239,81 @@ async function viewTeacherHome(refresh = true) {
   } catch (e) {
     if (e.code === 'AUTH') Sync.onAuthNeeded();
   }
+}
+
+// ---------- 관리자: 교사 가입 관리 ----------
+
+async function viewAdmin() {
+  const seq = render(`
+    <section class="page-head">
+      <div><p class="eyebrow">최고 관리자</p><h1>👑 교사 가입 관리</h1></div>
+      <button class="btn ghost" id="back">← 내 학급</button>
+    </section>
+    <p class="hint">새로 가입한 교사는 관리자가 <b>승인</b>해야 로그인할 수 있습니다. 승인·거절하면 교사 아이디로 안내 메일이 갑니다.</p>
+    <div id="adminBody"><section class="card"><p class="muted">불러오는 중…</p></section></div>`);
+  $app.classList.add('wide');
+  document.getElementById('back').onclick = () => viewTeacherHome();
+
+  const fmtDate = iso => (iso ? new Date(iso).toLocaleDateString('ko-KR', { year: 'numeric', month: 'numeric', day: 'numeric' }) : '');
+  const setStatus = async (email, status, name) => {
+    const msg = status === 'approved' ? `${name} 선생님의 가입을 승인할까요?` : `${name} 선생님의 가입을 거절할까요?\n거절하면 이 계정으로 로그인할 수 없습니다.`;
+    if (!confirm(msg)) return;
+    try {
+      await api('adminSetTeacherStatus', { token: state.teacher.token, email, status, appUrl: appAddress() });
+      toast(status === 'approved' ? `${name} 선생님을 승인했습니다.` : `${name} 선생님의 가입을 거절했습니다.`, 'ok');
+      load();
+    } catch (e) {
+      toast(isNetErr(e) ? '인터넷에 연결된 상태에서 할 수 있어요.' : e.message, 'warn');
+    }
+  };
+
+  async function load() {
+    const body = document.getElementById('adminBody');
+    let teachers;
+    try {
+      teachers = (await api('adminListTeachers', { token: state.teacher.token })).teachers;
+    } catch (e) {
+      if (seq !== viewSeq) return;
+      body.innerHTML = `<section class="card"><p class="notice warn">${esc(isNetErr(e) ? '인터넷에 연결된 상태에서 볼 수 있어요.' : e.message)}</p></section>`;
+      return;
+    }
+    if (seq !== viewSeq) return;
+    const by = st => teachers.filter(t => t.status === st).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const pending = by('pending');
+    const approved = by('approved');
+    const rejected = by('rejected');
+    body.innerHTML = `
+      <section class="card">
+        <h3>승인 대기 <span class="muted small">${pending.length}명</span></h3>
+        ${pending.length ? `<ul class="list">${pending.map(t => `<li>
+          <div><b>${esc(t.name)}</b> <span class="muted small">${esc(t.email)}</span><br>
+            <span class="muted small">신청일 ${esc(fmtDate(t.createdAt))}</span></div>
+          <span class="row-actions">
+            <button class="btn sm primary" data-ok="${esc(t.email)}" data-name="${esc(t.name)}">승인</button>
+            <button class="btn sm ghost" data-no="${esc(t.email)}" data-name="${esc(t.name)}">거절</button>
+          </span></li>`).join('')}</ul>`
+        : '<p class="muted">새로운 가입 신청이 없습니다.</p>'}
+      </section>
+      <section class="card">
+        <h3>승인된 교사 <span class="muted small">${approved.length}명</span></h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>이름</th><th>아이디</th><th>가입일</th><th class="num">학급</th><th class="num">학생</th></tr></thead>
+          <tbody>${approved.map(t => `<tr><td class="nowrap">${esc(t.name)} ${t.isAdmin ? '<span class="tag">관리자</span>' : ''}</td>
+            <td>${esc(t.email)}</td><td class="nowrap">${esc(fmtDate(t.createdAt))}</td>
+            <td class="num">${t.classes}</td><td class="num">${t.students}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </section>
+      ${rejected.length ? `<section class="card">
+        <h3>거절된 신청 <span class="muted small">${rejected.length}명</span></h3>
+        <ul class="list">${rejected.map(t => `<li>
+          <div><b>${esc(t.name)}</b> <span class="muted small">${esc(t.email)} · 거절 ${esc(fmtDate(t.decidedAt))}</span></div>
+          <button class="btn sm ghost" data-ok="${esc(t.email)}" data-name="${esc(t.name)}">승인으로 바꾸기</button></li>`).join('')}</ul>
+      </section>` : ''}
+      <p class="hint">관리자 지정: Apps Script 코드 맨 위의 <code>ADMIN_EMAILS</code>에 관리자 교사 아이디를 적습니다. 비워 두면 가장 먼저 가입한 교사가 관리자입니다.</p>`;
+    body.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => setStatus(b.dataset.ok, 'approved', b.dataset.name));
+    body.querySelectorAll('[data-no]').forEach(b => b.onclick = () => setStatus(b.dataset.no, 'rejected', b.dataset.name));
+  }
+  load();
 }
 
 // ---------- 교사: 학반 세팅 (① 명단 ② 역할 ③ 배정 ④ 평가 기준) ----------

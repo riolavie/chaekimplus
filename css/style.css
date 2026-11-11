@@ -432,6 +432,11 @@ a.btn { text-decoration: none; }
 .pins-table td { vertical-align: middle; }
 .pins-table .btn.sm { padding: 3px 10px; }
 
+.admin-card { border-color: color-mix(in srgb, var(--mid) 45%, var(--line)); }
+.admin-card .btn { margin-top: 4px; }
+.alert-chip { cursor: pointer; background: var(--mid-soft) !important; color: var(--text) !important; border-color: transparent !important; }
+.row-actions { display: flex; gap: 6px; flex: none; }
+
 @media (max-width: 920px) {
   .dash { grid-template-columns: 1fr; }
   .tiles { grid-template-columns: repeat(2, 1fr); }
