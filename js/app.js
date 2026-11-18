@@ -1,7 +1,7 @@
 'use strict';
 
 // 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
-const APP_VERSION = 'v15 (2026.11.11)';
+const APP_VERSION = 'v16 (2026.11.18)';
 
 const SCALE = CONFIG.SCALE; // 높은 점수부터
 const MAX_SCORE = Math.max(...SCALE.map(s => s.value));
@@ -654,10 +654,10 @@ async function loadMyRecords(seq) {
   const s = state.student;
   const key = `myrecs:${s.classCode}:${s.number}`;
   let data = await DB.get(key);
-  let month = null;
+  const view = { month: null, day: null };
   const draw = () => {
     if (seq !== viewSeq || !document.getElementById('myEvalBody')) return;
-    month = drawMyRecords(data, month, m => { month = m; draw(); });
+    drawMyRecords(data, view, draw);
   };
   draw();
   try {
@@ -677,52 +677,86 @@ async function loadMyRecords(seq) {
   }
 }
 
-function drawMyRecords(data, month, onMonth) {
+// 날짜 → 그날 정보. 학생·교사 화면 공통
+const weekday = d => '일월화수목금토'[new Date(d + 'T00:00:00').getDay()];
+const dayLabel = d => `${Number(d.slice(5, 7))}월 ${Number(d.slice(8))}일 (${weekday(d)})`;
+const avgOf = list => list.reduce((a, r) => a + Number(r.score), 0) / list.length;
+
+// 한 달 달력: info(date) → { avg, n, fb } , 날짜를 누르면 onPick(date)
+function calendarHtml(month, info, selected) {
+  const first = new Date(month + '-01T00:00:00');
+  const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const today = localDate();
+  const cells = [];
+  for (let i = 0; i < first.getDay(); i++) cells.push('<span class="cal-empty"></span>');
+  for (let d = 1; d <= days; d++) {
+    const date = `${month}-${String(d).padStart(2, '0')}`;
+    const x = info(date) || {};
+    const tone = x.n ? `s${Math.round(x.avg)}` : '';
+    cells.push(`<button class="cal-day ${tone} ${x.n ? 'has' : ''} ${date === selected ? 'sel' : ''} ${date === today ? 'today' : ''}" data-day="${date}"
+      title="${dayLabel(date)}${x.n ? ` · 평균 ${x.avg.toFixed(1)}점 (${x.n}건)` : ''}${x.fb ? ' · 선생님 피드백' : ''}">
+      <span class="d">${d}</span>${x.n ? `<b>${x.avg.toFixed(1)}</b>` : ''}${x.fb ? '<i>💬</i>' : ''}</button>`);
+  }
+  return `<div class="cal">
+    ${'일월화수목금토'.split('').map(w => `<span class="cal-w">${w}</span>`).join('')}
+    ${cells.join('')}</div>`;
+}
+
+function drawMyRecords(data, view, redraw) {
   const el = document.getElementById('myEvalBody');
-  if (!data) return month;
+  if (!data) return;
   const recs = data.records || [];
-  if (!recs.length) {
+  const fbs = data.feedback || [];
+  if (!recs.length && !fbs.length) {
     el.innerHTML = '<p class="muted">아직 받은 평가가 없어요. 역할을 열심히 해 봐요! 💪</p>';
-    return month;
+    return;
   }
   const thisMonth = localDate().slice(0, 7);
-  const months = [...new Set(recs.map(r => r.date.slice(0, 7)))].sort().reverse();
-  if (!month || !months.includes(month)) month = months.includes(thisMonth) ? thisMonth : months[0];
-  const rs = recs.filter(r => r.date.startsWith(month)).sort((a, b) => (b.date + b.inspectedAt).localeCompare(a.date + a.inspectedAt));
+  const dates = [...new Set([...recs.map(r => r.date), ...fbs.map(f => f.date)])].sort();
+  const months = [...new Set([thisMonth, ...dates.map(d => d.slice(0, 7))])].sort().reverse();
+  if (!view.month || !months.includes(view.month)) view.month = dates.some(d => d.startsWith(thisMonth)) ? thisMonth : dates[dates.length - 1].slice(0, 7);
+  if (!view.day || !view.day.startsWith(view.month)) view.day = dates.filter(d => d.startsWith(view.month)).pop() || null;
+
+  const recsOn = d => recs.filter(r => r.date === d);
+  const fbOn = d => (fbs.find(f => f.date === d) || {}).text || '';
+  const info = d => { const x = recsOn(d); return { n: x.length, avg: x.length ? avgOf(x) : 0, fb: !!fbOn(d) }; };
+  const monthRecs = recs.filter(r => r.date.startsWith(view.month));
   const cnt = {};
-  rs.forEach(r => { cnt[r.score] = (cnt[r.score] || 0) + 1; });
-  const avg = rs.reduce((a, r) => a + Number(r.score), 0) / rs.length;
-  const info = (data.months || []).find(m => m.month === month) || {};
-  const monthAvg = m => {
-    const x = recs.filter(r => r.date.startsWith(m));
-    return { n: x.length, avg: x.reduce((a, r) => a + Number(r.score), 0) / x.length };
+  monthRecs.forEach(r => { cnt[r.score] = (cnt[r.score] || 0) + 1; });
+  const monthInfo = (data.months || []).find(m => m.month === view.month) || {};
+
+  const dayCard = d => {
+    if (!d) return '<p class="muted">이 달에는 아직 받은 평가가 없어요.</p>';
+    const x = recsOn(d);
+    const fb = fbOn(d);
+    return `<div class="day-card">
+      <p class="day-title">${d === localDate() ? '오늘 · ' : ''}${dayLabel(d)}</p>
+      ${x.length ? x.map(r => `<div class="day-rec">
+          <span class="muted small">${esc(r.taskName)}</span> ${scorePill(r.score)}
+          ${r.memo ? `<p class="memo-text">💬 친구 메모: ${esc(r.memo)}</p>` : ''}</div>`).join('')
+        : '<p class="muted small">이 날은 받은 평가가 없어요.</p>'}
+      ${fb ? `<p class="teacher-fb">👩‍🏫 <b>선생님 피드백</b><br>${esc(fb)}</p>` : ''}
+    </div>`;
   };
 
   el.innerHTML = `
-    ${months.length > 1 ? `<div class="month-pills">${months.map(m => `<button class="${m === month ? 'on' : ''}" data-m="${m}">${Number(m.slice(5))}월</button>`).join('')}</div>` : ''}
-    <div class="my-summary">
-      <div class="my-score"><span class="muted small">${monthLabel(month)} 평균</span>
-        <b>${avg.toFixed(2)}<small> / ${MAX_SCORE}</small></b>
-        <span class="muted small">평가 ${rs.length}회</span></div>
+    ${months.length > 1 ? `<div class="month-pills">${months.map(m => `<button class="${m === view.month ? 'on' : ''}" data-m="${m}">${Number(m.slice(5))}월</button>`).join('')}</div>` : ''}
+    ${dayCard(view.day)}
+    ${calendarHtml(view.month, info, view.day)}
+    ${monthRecs.length ? `<div class="my-summary">
+      <div class="my-score"><span class="muted small">${monthLabel(view.month)} 평균</span>
+        <b>${avgOf(monthRecs).toFixed(2)}<small> / ${MAX_SCORE}</small></b>
+        <span class="muted small">평가 ${monthRecs.length}회</span></div>
       <div class="my-dist">
-        ${info.excellent ? `<p class="badge-excellent">🏆 ${Number(month.slice(5))}월 우수 학생${month === thisMonth ? ' <small>(지금까지 기준)</small>' : ''}</p>` : ''}
-        ${stackBar(cnt, rs.length)}
+        ${monthInfo.excellent ? `<p class="badge-excellent">🏆 ${Number(view.month.slice(5))}월 우수 학생${view.month === thisMonth ? ' <small>(지금까지 기준)</small>' : ''}</p>` : ''}
+        ${stackBar(cnt, monthRecs.length)}
         ${scaleLegend()}
       </div>
-    </div>
-    <ul class="list my-list">${rs.map(r => `<li>
-      <div><b>${esc(r.date.slice(5).replace('-', '/'))}</b> <span class="muted small">${esc(r.taskName)}</span>
-        ${r.memo ? `<p class="memo-text">💬 ${esc(r.memo)}</p>` : ''}</div>
-      ${scorePill(r.score)}</li>`).join('')}</ul>
-    ${months.length > 1 ? `<h4>월별 기록</h4><ul class="list compact">${months.map(m => {
-      const x = monthAvg(m);
-      const ex = ((data.months || []).find(y => y.month === m) || {}).excellent;
-      return `<li><span>${monthLabel(m)} ${ex ? '🏆' : ''}</span><span class="muted small">평가 ${x.n}회 · 평균 <b>${x.avg.toFixed(2)}</b></span></li>`;
-    }).join('')}</ul>` : ''}
-    <p class="muted small">평가한 친구는 공개되지 않아요.${data.showMemos ? '' : ' 메모는 선생님만 볼 수 있어요.'}
+    </div>` : ''}
+    <p class="muted small">날짜를 누르면 그날의 점수와 피드백을 볼 수 있어요. 평가한 친구는 공개되지 않아요.${data.showMemos ? '' : ' 친구 메모는 선생님만 볼 수 있어요.'}
       ${data.fetchedAt ? `<br>${fmtTime(data.fetchedAt)} 기준` : ''}</p>`;
-  el.querySelectorAll('[data-m]').forEach(b => b.onclick = () => onMonth(b.dataset.m));
-  return month;
+  el.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { view.month = b.dataset.m; view.day = null; redraw(); });
+  el.querySelectorAll('[data-day]').forEach(b => b.onclick = () => { view.day = b.dataset.day; redraw(); });
 }
 
 function inspectFormHtml(cfg, myNo) {
@@ -1087,7 +1121,7 @@ async function viewTeacherHome(refresh = true) {
         <div class="card-actions four">
           <button class="btn primary" data-act="eval" data-code="${esc(c.classCode)}">🏆 월별 우수 학생</button>
           <button class="btn" data-act="assign" data-code="${esc(c.classCode)}">🎲 역할 배정</button>
-          <button class="btn" data-act="records" data-code="${esc(c.classCode)}">📝 평가 기록 · 메모</button>
+          <button class="btn" data-act="day" data-code="${esc(c.classCode)}">📅 일별 점수 · 피드백</button>
           <button class="btn ghost" data-act="setup" data-code="${esc(c.classCode)}">⚙️ 학반 설정</button>
         </div>
       </article>`;
@@ -1127,7 +1161,7 @@ async function viewTeacherHome(refresh = true) {
         <h2 class="section-title">최근 평가 메모</h2>
         <section class="card">
           ${memos.length ? `<ul class="memo-feed">${memos.map(r => `
-            <li data-memo="${esc(r.cls.classCode)}">
+            <li data-memo="${esc(r.cls.classCode)}" data-date="${esc(r.date)}">
               <div class="memo-meta">
                 <b>${esc(r.studentNo)}번 ${esc(r.studentName)}</b>
                 ${scorePill(r.score)}
@@ -1135,7 +1169,7 @@ async function viewTeacherHome(refresh = true) {
               </div>
               <p>${esc(r.memo)}</p>
             </li>`).join('')}</ul>
-            <p class="muted small">메모 전체는 각 학급의 <b>평가 기록 · 메모</b>에서 볼 수 있어요.</p>`
+            <p class="muted small">메모를 누르면 그날의 <b>일별 점수 · 피드백</b>으로 이동해 선생님 피드백을 남길 수 있어요.</p>`
           : '<p class="muted">아직 메모가 없습니다. 검사 담당 학생이 평가할 때 남긴 메모가 여기에 모입니다.</p>'}
         </section>` : ''}
       </div>
@@ -1189,11 +1223,11 @@ async function viewTeacherHome(refresh = true) {
   };
   $app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
     const c = classes.find(x => x.classCode === b.dataset.code);
-    ({ eval: () => viewRecords(c, 'eval'), records: () => viewRecords(c, 'list'),
+    ({ eval: () => viewRecords(c, 'eval'), records: () => viewRecords(c, 'list'), day: () => viewRecords(c, 'day'),
        assign: () => viewSetup(c, 3), setup: () => viewSetup(c, 1), pins: () => viewPins(c) })[b.dataset.act]();
   });
   $app.querySelectorAll('[data-memo]').forEach(li => li.onclick = () =>
-    viewRecords(classes.find(x => x.classCode === li.dataset.memo), 'list'));
+    viewRecords(classes.find(x => x.classCode === li.dataset.memo), 'day', { day: li.dataset.date }));
 
   api('ping').then(r => ((r.version || 0) >= CONFIG.SERVER_VERSION ? '✅ 연결됨' : '⚠️ 서버 코드 업데이트 필요'),
     e => (isNetErr(e) && !navigator.onLine ? '오프라인' : '❌ 연결 안 됨'))
@@ -1232,7 +1266,7 @@ async function viewTeacherHome(refresh = true) {
     for (const c of r.classes) {
       const got = await api('getRecords', { token: state.teacher.token, classCode: c.classCode });
       const old = ((await DB.get('records:' + c.classCode)) || {}).records || [];
-      await DB.set('records:' + c.classCode, { records: got.records, fetchedAt: Date.now() });
+      await DB.set('records:' + c.classCode, { records: got.records, feedback: got.feedback || [], fetchedAt: Date.now() });
       if (got.records.length !== old.length) changed = true;
     }
     if (seq === viewSeq && changed) viewTeacherHome(false);
@@ -1721,17 +1755,36 @@ async function viewPins(cls) {
   load();
 }
 
-async function viewRecords(cls, tab = 'eval') {
+// 선생님 피드백: 기기에 바로 반영하고 전송 대기열로 서버에 보냄
+async function saveFeedbackLocal(cls, cache, date, no, text) {
+  cache.feedback = cache.feedback.filter(f => !(f.date === date && f.studentNo === no));
+  if (text) cache.feedback.push({ date, studentNo: no, text, updatedAt: new Date().toISOString() });
+  await DB.set('records:' + cls.classCode, cache);
+  await Sync.enqueue('saveFeedback', { classCode: cls.classCode, date, studentNo: no, text },
+    { auth: 'teacher', email: state.teacher.email, label: `피드백: ${studentLabel(cls, no)} · ${date}` });
+}
+
+// 아직 전송되지 않은 피드백을 화면에 반영
+async function applyPendingFeedback(code, cache) {
+  (await DB.outboxAll()).filter(o => o.action === 'saveFeedback' && o.data.classCode === code).forEach(o => {
+    const { date, studentNo, text } = o.data;
+    cache.feedback = cache.feedback.filter(f => !(f.date === date && f.studentNo === studentNo));
+    if (text) cache.feedback.push({ date, studentNo, text });
+  });
+}
+
+async function viewRecords(cls, tab = 'eval', opt = {}) {
   const today = localDate();
   const seq = render(`
     <section class="page-head">
       <div><p class="eyebrow">${esc(cls.className)} · 학급 코드 ${esc(cls.classCode)}</p>
-        <h1>${tab === 'eval' ? '월별 우수 학생' : '평가 기록'}</h1></div>
+        <h1>${{ eval: '월별 우수 학생', day: '일별 점수 · 피드백', list: '평가 기록' }[tab]}</h1></div>
       <button class="btn ghost" id="back">← 학급 목록</button>
     </section>
     <nav class="tabs">
+      <button data-tab="day" class="${tab === 'day' ? 'on' : ''}">📅 일별 점수 · 피드백</button>
       <button data-tab="eval" class="${tab === 'eval' ? 'on' : ''}">🏆 월별 우수 학생</button>
-      <button data-tab="list" class="${tab === 'list' ? 'on' : ''}">평가 기록 · 메모</button>
+      <button data-tab="list" class="${tab === 'list' ? 'on' : ''}">📝 전체 기록</button>
     </nav>
     <section class="card filters" id="filters"></section>
     <div id="out"></div>`);
@@ -1740,6 +1793,8 @@ async function viewRecords(cls, tab = 'eval') {
   $app.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => viewRecords(cls, b.dataset.tab));
 
   let cache = (await DB.get('records:' + cls.classCode)) || { records: [], fetchedAt: null };
+  cache.feedback = cache.feedback || [];
+  await applyPendingFeedback(cls.classCode, cache);
   const $f = document.getElementById('filters');
   const info = () => (cache.fetchedAt
     ? `${fmtTime(cache.fetchedAt)}에 받은 기록입니다. 원본은 구글 스프레드시트 'Records' 시트에 누적됩니다.`
@@ -1753,6 +1808,23 @@ async function viewRecords(cls, tab = 'eval') {
 
   if (tab === 'eval') {
     $f.innerHTML = `<label>월<select id="month"></select></label>${actions}`;
+  } else if (tab === 'day') {
+    const dates = cache.records.map(r => r.date).sort();
+    const first = opt.day || (cache.records.some(r => r.date === today) ? today : dates.pop() || today);
+    $f.innerHTML = `
+      <div class="day-nav">
+        <button class="btn sm" id="prevDay" title="전날">◀</button>
+        <input type="date" id="day" value="${first}">
+        <button class="btn sm" id="nextDay" title="다음날">▶</button>
+        <button class="btn sm ghost" id="todayBtn">오늘</button>
+        <label class="check"><input type="checkbox" id="ratedOnly"> 평가받은 학생만</label>
+      </div>
+      ${actions}`;
+    const $day = $f.querySelector('#day');
+    const move = n => { const d = new Date($day.value + 'T00:00:00'); d.setDate(d.getDate() + n); $day.value = localDate(d); draw(); };
+    $f.querySelector('#prevDay').onclick = () => move(-1);
+    $f.querySelector('#nextDay').onclick = () => move(1);
+    $f.querySelector('#todayBtn').onclick = () => { $day.value = today; draw(); };
   } else {
     $f.innerHTML = `
       <label>시작일<input type="date" id="from" value="${today.slice(0, 8)}01"></label>
@@ -1779,7 +1851,76 @@ async function viewRecords(cls, tab = 'eval') {
 
   function draw() {
     document.getElementById('fetchInfo').textContent = info();
-    if (tab === 'eval') drawEval(); else drawList();
+    ({ eval: drawEval, day: drawDay, list: drawList })[tab]();
+  }
+
+  // --- 일별 점수 · 피드백
+  const savedFb = new Set(); // 이번 화면에서 저장한 "날짜|번호"
+  function drawDay() {
+    const d = document.getElementById('day').value || today;
+    const ratedOnly = document.getElementById('ratedOnly').checked;
+    const recs = cache.records.filter(r => r.date === d);
+    const fbText = no => (cache.feedback.find(f => f.date === d && f.studentNo === no) || {}).text || '';
+    const info = date => {
+      const x = cache.records.filter(r => r.date === date);
+      return { n: x.length, avg: x.length ? avgOf(x) : 0, fb: cache.feedback.some(f => f.date === date && f.text) };
+    };
+    const rows = cls.students.map(st => ({ st, rs: recs.filter(r => r.studentNo === st.no) }))
+      .filter(x => !ratedOnly || x.rs.length);
+    const rated = cls.students.filter(st => recs.some(r => r.studentNo === st.no)).length;
+    const fbCount = cls.students.filter(st => fbText(st.no)).length;
+    const roleOf = no => (cls.tasks.find(t => t.assigneeNos.includes(no)) || {}).name || '';
+
+    document.getElementById('out').innerHTML = `
+      <div class="day-layout">
+        <section class="card cal-card">
+          <h3>${monthLabel(d.slice(0, 7))}</h3>
+          ${calendarHtml(d.slice(0, 7), info, d)}
+          <p class="muted small">칸의 숫자는 그날 반 평균, 💬는 선생님 피드백이 있는 날이에요.</p>
+        </section>
+        <section class="card">
+          <h3>${dayLabel(d)}</h3>
+          <div class="welcome-stats day-stats">
+            <span>평가받은 학생 <b>${rated}</b>/${cls.students.length}</span>
+            <span>반 평균 <b>${recs.length ? avgOf(recs).toFixed(2) : '–'}</b></span>
+            <span>친구 메모 <b>${recs.filter(r => r.memo).length}</b></span>
+            <span>선생님 피드백 <b>${fbCount}</b></span>
+          </div>
+          ${rows.length ? `<div class="table-wrap"><table class="day-table">
+            <thead><tr><th>학생</th><th>점수</th><th>친구 메모</th><th>선생님 피드백 <span class="muted small">(학생 화면에 보여요)</span></th></tr></thead>
+            <tbody>${rows.map(({ st, rs }) => `<tr class="${rs.length ? '' : 'dim'}">
+              <td class="nowrap"><b>${esc(st.no)}</b> ${esc(st.name)}<br><span class="muted small">${esc(rs[0] ? rs.map(r => r.taskName).join(', ') : roleOf(st.no))}</span></td>
+              <td class="nowrap">${rs.length ? rs.map(r => scorePill(r.score)).join('<br>') : '<span class="small">평가 없음</span>'}</td>
+              <td>${rs.filter(r => r.memo).map(r => `<div>${esc(r.memo)} <span class="muted small">— ${esc(r.inspectorNo)}번</span></div>`).join('')}</td>
+              <td><div class="fb-cell">
+                <textarea rows="1" maxlength="300" data-fb="${esc(st.no)}" placeholder="칭찬이나 조언을 남겨 주세요">${esc(fbText(st.no))}</textarea>
+                <button class="btn sm" data-save="${esc(st.no)}">${savedFb.has(d + '|' + st.no) ? '✓ 저장됨' : '저장'}</button></div></td>
+            </tr>`).join('')}</tbody>
+          </table></div>` : '<p class="muted">이 날 평가받은 학생이 없습니다.</p>'}
+        </section>
+      </div>`;
+
+    $app.querySelectorAll('#out [data-day]').forEach(b => b.onclick = () => { document.getElementById('day').value = b.dataset.day; draw(); });
+    $app.querySelectorAll('#out [data-fb]').forEach(t => {
+      const grow = () => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; };
+      t.oninput = () => { grow(); savedFb.delete(d + '|' + t.dataset.fb); t.closest('.fb-cell').querySelector('[data-save]').textContent = '저장'; };
+      grow();
+    });
+    $app.querySelectorAll('#out [data-save]').forEach(b => b.onclick = async () => {
+      const no = b.dataset.save;
+      const text = $app.querySelector(`#out [data-fb="${no}"]`).value.trim();
+      await saveFeedbackLocal(cls, cache, d, no, text);
+      savedFb.add(d + '|' + no);
+      draw(); // 요약 숫자와 달력의 💬 표시 갱신
+      toast(navigator.onLine ? `${studentLabel(cls, no)} 학생에게 피드백을 남겼습니다.` : '저장했습니다. 와이파이 연결 시 전송됩니다.', 'ok');
+    });
+    document.getElementById('csv').onclick = () => downloadCsv(
+      `${cls.className}_${d}_일별평가.csv`, ['번호', '이름', '역할', '점수', '친구 메모', '선생님 피드백'],
+      cls.students.map(st => {
+        const rs = recs.filter(r => r.studentNo === st.no);
+        return [st.no, st.name, rs.map(r => r.taskName).join(' / '), rs.map(r => r.score).join(' / '),
+          rs.map(r => r.memo).filter(Boolean).join(' / '), fbText(st.no)];
+      }));
   }
 
   // --- 월별 우수 학생
@@ -1912,8 +2053,9 @@ async function viewRecords(cls, tab = 'eval') {
   async function fetchRecords() {
     try {
       const r = await api('getRecords', { token: state.teacher.token, classCode: cls.classCode });
-      cache = { records: r.records, fetchedAt: Date.now() };
+      cache = { records: r.records, feedback: r.feedback || [], fetchedAt: Date.now() };
       await DB.set('records:' + cls.classCode, cache);
+      await applyPendingFeedback(cls.classCode, cache);
       if (seq !== viewSeq) return;
       if (tab === 'eval') fillMonths();
       draw();

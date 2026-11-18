@@ -437,7 +437,40 @@ a.btn { text-decoration: none; }
 .alert-chip { cursor: pointer; background: var(--mid-soft) !important; color: var(--text) !important; border-color: transparent !important; }
 .row-actions { display: flex; gap: 6px; flex: none; }
 
+/* 달력 */
+.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 6px 0 10px; }
+.cal-w { text-align: center; font-size: .75rem; color: var(--muted); padding: 2px 0; }
+.cal-w:first-child { color: var(--bad); }
+.cal-day {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  min-height: 46px; padding: 4px 2px; font: inherit; cursor: pointer; color: var(--text);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+}
+.cal-day .d { font-size: .75rem; color: var(--muted); }
+.cal-day b { font-size: .85rem; font-variant-numeric: tabular-nums; }
+.cal-day i { position: absolute; top: 1px; right: 3px; font-style: normal; font-size: .65rem; }
+.cal-day.has { background: color-mix(in srgb, var(--c) 22%, var(--surface)); border-color: color-mix(in srgb, var(--c) 45%, var(--line)); }
+.cal-day.today { box-shadow: inset 0 0 0 2px var(--brand); }
+.cal-day.sel { outline: 3px solid var(--brand); outline-offset: 1px; }
+/* 하루 카드 (학생) */
+.day-card { padding: 14px; border-radius: 12px; background: var(--brand-soft); margin-bottom: 12px; }
+.day-title { font-weight: 800; margin: 0 0 8px; }
+.day-rec { padding: 4px 0; }
+.teacher-fb { margin: 10px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+/* 일별 보기 (교사) */
+.filters .day-nav { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.day-nav input { width: auto; margin: 0; padding: 7px 10px; }
+.day-layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
+.day-stats { margin-bottom: 12px; }
+.day-stats span { background: var(--bg); }
+.day-table td { vertical-align: top; }
+.day-table tr.dim td { color: var(--muted); }
+.fb-cell { display: flex; gap: 6px; align-items: flex-start; min-width: 220px; }
+.fb-cell textarea { margin: 0; padding: 6px 8px; font-size: .88rem; resize: none; overflow: hidden; min-height: 34px; }
+.fb-cell .btn { flex: none; }
+
 @media (max-width: 920px) {
+  .day-layout { grid-template-columns: 1fr; }
   .dash { grid-template-columns: 1fr; }
   .tiles { grid-template-columns: repeat(2, 1fr); }
   .card-actions.four { grid-template-columns: 1fr 1fr; }

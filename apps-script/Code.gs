@@ -25,7 +25,7 @@ const CONTACT_EMAIL = 'riolavie0516@naver.com';
 const SESSION_DAYS = 30;
 
 // 서버 코드 버전. 앱이 이 값으로 서버 코드 업데이트가 필요한지 판단합니다.
-const SERVER_VERSION = 14;
+const SERVER_VERSION = 15;
 
 const SHEETS = {
   // status: '' 또는 approved = 승인됨, pending = 승인 대기, rejected = 거절됨
@@ -43,6 +43,8 @@ const SHEETS = {
   // 학생 개인 비밀번호(숫자 4자리). 교사가 확인할 수 있도록 pin 열에 저장 (salt·hash 는 이전 버전 호환용)
   StudentPins: ['classCode', 'studentNo', 'salt', 'hash', 'fails', 'lockedUntil', 'updatedAt', 'pin', 'mustChange'],
   StudentSessions: ['token', 'classCode', 'studentNo', 'expiresAt'],
+  // 선생님이 학생에게 남기는 날짜별 피드백 (학생 화면에 항상 표시)
+  Feedback: ['classCode', 'date', 'studentNo', 'text', 'updatedAt', 'teacherEmail'],
 };
 
 const STUDENT_SESSION_DAYS = 180;
@@ -339,7 +341,24 @@ const ACTIONS = {
     const records = rows_('Records')
       .filter(r => r.classCode === c.classCode)
       .map(r => { delete r._row; return r; });
-    return { records };
+    const feedback = rows_('Feedback').filter(f => f.classCode === c.classCode && f.text)
+      .map(f => ({ date: f.date, studentNo: f.studentNo, text: f.text, updatedAt: f.updatedAt }));
+    return { records, feedback };
+  },
+
+  // 교사: 학생에게 날짜별 피드백 남기기 (빈 글이면 삭제)
+  saveFeedback(req) {
+    const c = teacherClass_(req);
+    const date = String(req.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail_('날짜가 올바르지 않습니다.', 'BAD');
+    const no = String(parseInt(req.studentNo, 10));
+    const text = String(req.text || '').trim().slice(0, 300);
+    const sh = sheet_('Feedback');
+    const row = rows_('Feedback').find(f => f.classCode === c.classCode && f.date === date && f.studentNo === no);
+    const data = [c.classCode, date, no, text, new Date().toISOString(), c.teacherEmail];
+    if (row) sh.getRange(row._row, 1, 1, data.length).setValues([data]);
+    else if (text) sh.appendRow(data);
+    return { date, studentNo: no, text };
   },
 
   // 학생 입장: 반·번호·이름·학급 코드 + 개인 비밀번호(숫자 4자리)
@@ -438,6 +457,8 @@ const ACTIONS = {
         date: r.date, taskName: r.taskName, score: Number(r.score),
         memo: cls.showMemos ? r.memo : '', inspectedAt: r.inspectedAt,
       })),
+      feedback: rows_('Feedback').filter(f => f.classCode === cls.classCode && f.studentNo === s.studentNo && f.text)
+        .map(f => ({ date: f.date, text: f.text })),
       months: months.sort().map(m => {
         const st = monthStats_(all, cls, m).find(x => x.no === s.studentNo) || {};
         return { month: m, excellent: !!st.excellent };
