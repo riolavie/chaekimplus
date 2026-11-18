@@ -488,6 +488,8 @@ a.btn { text-decoration: none; }
 .search { width: auto; min-width: 200px; margin: 0; padding: 7px 10px; }
 .toolbar h3 { margin: 0; }
 
+.clickable { cursor: pointer; text-decoration: underline dotted; }
+
 @media (max-width: 920px) {
   .admin-tiles { grid-template-columns: repeat(2, 1fr); }
   .admin-grid { grid-template-columns: 1fr; }

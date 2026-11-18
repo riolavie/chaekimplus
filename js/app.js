@@ -1,7 +1,7 @@
 'use strict';
 
 // 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
-const APP_VERSION = 'v17 (2026.11.18)';
+const APP_VERSION = 'v18 (2026.11.18)';
 const APP_VER = APP_VERSION.split(' ')[0];
 
 const SCALE = CONFIG.SCALE; // 높은 점수부터
@@ -284,6 +284,7 @@ async function checkServer() {
   try {
     const r = await api('ping');
     lines.push(`서버 코드 버전: ${r.version || '예전 버전'} (필요: ${CONFIG.SERVER_VERSION} 이상)`);
+    lines.push('확인: 위 서버 주소를 브라우저에서 열면 "version" 숫자가 보입니다.');
     verdict = (r.version || 0) >= CONFIG.SERVER_VERSION
       ? `<p class="notice">✅ 서버와 정상적으로 연결됩니다. (서버 시각 ${esc(r.time)})</p>`
       : `<p class="notice warn">⚠️ 서버에는 연결되지만 <b>서버 코드가 예전 버전</b>이라 일부 기능(학생 입장 등)이 동작하지 않습니다.</p>
@@ -1271,9 +1272,15 @@ async function viewTeacherHome(refresh = true) {
   $app.querySelectorAll('[data-memo]').forEach(li => li.onclick = () =>
     viewRecords(classes.find(x => x.classCode === li.dataset.memo), 'day', { day: li.dataset.date }));
 
-  api('ping').then(r => ((r.version || 0) >= CONFIG.SERVER_VERSION ? '✅ 연결됨' : '⚠️ 서버 코드 업데이트 필요'),
-    e => (isNetErr(e) && !navigator.onLine ? '오프라인' : '❌ 연결 안 됨'))
-    .then(t => { const el = document.getElementById('serverState'); if (el && seq === viewSeq) el.textContent = t; });
+  api('ping').then(r => ((r.version || 0) >= CONFIG.SERVER_VERSION ? '✅ 연결됨'
+    : `⚠️ 서버 코드 업데이트 필요 (지금 ${r.version || '예전 버전'} → ${CONFIG.SERVER_VERSION} 필요)`),
+  e => (isNetErr(e) && !navigator.onLine ? '오프라인' : '❌ 연결 안 됨'))
+    .then(t => {
+      const el = document.getElementById('serverState');
+      if (!el || seq !== viewSeq) return;
+      el.textContent = t;
+      if (!t.startsWith('✅')) { el.classList.add('clickable'); el.title = '눌러서 자세히 보기'; el.onclick = checkServer; }
+    });
 
   if (state.teacher.isAdmin) {
     document.getElementById('goAdmin').onclick = () => viewAdminConsole();
