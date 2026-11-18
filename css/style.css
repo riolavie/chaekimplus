@@ -469,7 +469,29 @@ a.btn { text-decoration: none; }
 .fb-cell textarea { margin: 0; padding: 6px 8px; font-size: .88rem; resize: none; overflow: hidden; min-height: 34px; }
 .fb-cell .btn { flex: none; }
 
+.updatebar { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; padding: 8px 16px; font-size: .9rem; background: var(--mid-soft); border-bottom: 1px solid var(--line); }
+.update-hint { display: inline-block; margin-top: 4px; }
+
+.admin-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
+  padding: 18px 22px; border-radius: var(--radius); background: linear-gradient(135deg, var(--mid-soft), var(--brand-soft)); border: 1px solid var(--line); }
+.admin-head h1 { margin: 0; }
+.admin-head .actions { margin: 0; }
+.tab-badge:not(:empty) { display: inline-block; margin-left: 6px; min-width: 18px; padding: 0 5px; border-radius: 999px; font-size: .72rem; line-height: 18px; color: #fff; background: var(--bad); }
+.admin-tiles { grid-template-columns: repeat(4, 1fr); margin-top: 0; }
+.admin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.mini-chart { display: flex; align-items: flex-end; gap: 6px; height: 160px; padding: 8px 0 0; }
+.mc-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
+.mc-bar { width: 70%; max-width: 28px; min-height: 2px; border-radius: 4px 4px 0 0; background: var(--brand); }
+.mc-col:hover .mc-bar { background: var(--navy); }
+.mc-val { font-size: .72rem; color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+.mc-label { margin-top: 4px; font-size: .68rem; color: var(--muted); white-space: nowrap; }
+.search { width: auto; min-width: 200px; margin: 0; padding: 7px 10px; }
+.toolbar h3 { margin: 0; }
+
 @media (max-width: 920px) {
+  .admin-tiles { grid-template-columns: repeat(2, 1fr); }
+  .admin-grid { grid-template-columns: 1fr; }
+  .mc-label { font-size: .6rem; }
   .day-layout { grid-template-columns: 1fr; }
   .dash { grid-template-columns: 1fr; }
   .tiles { grid-template-columns: repeat(2, 1fr); }

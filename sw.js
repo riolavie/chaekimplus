@@ -1,5 +1,5 @@
 // 앱 파일을 수정하면 버전을 올려주세요. (예: v2) 그래야 학생 기기에도 새 버전이 적용됩니다.
-const CACHE = 'chaekim-plus-v16';
+const CACHE = 'chaekim-plus-v17';
 const ASSETS = [
   './',
   'index.html',
@@ -37,7 +37,7 @@ self.addEventListener('activate', e => {
 
 // 화면·코드 파일: 온라인이면 항상 최신 파일(4초 안에 응답 없으면 저장본), 오프라인이면 저장본
 // 아이콘 등: 저장본을 먼저 쓰고 뒤에서 갱신
-const isAppFile = (req, url) => req.mode === 'navigate' || /\.(html|js|css|webmanifest|gs)$/.test(url.pathname) || url.pathname.endsWith('/');
+const isAppFile = (req, url) => req.mode === 'navigate' || /\.(html|js|css|webmanifest|gs|json)$/.test(url.pathname) || url.pathname.endsWith('/');
 
 self.addEventListener('fetch', e => {
   const req = e.request;

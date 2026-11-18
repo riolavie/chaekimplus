@@ -25,7 +25,7 @@ const CONTACT_EMAIL = 'riolavie0516@naver.com';
 const SESSION_DAYS = 30;
 
 // 서버 코드 버전. 앱이 이 값으로 서버 코드 업데이트가 필요한지 판단합니다.
-const SERVER_VERSION = 15;
+const SERVER_VERSION = 16;
 
 const SHEETS = {
   // status: '' 또는 approved = 승인됨, pending = 승인 대기, rejected = 거절됨
@@ -45,6 +45,8 @@ const SHEETS = {
   StudentSessions: ['token', 'classCode', 'studentNo', 'expiresAt'],
   // 선생님이 학생에게 남기는 날짜별 피드백 (학생 화면에 항상 표시)
   Feedback: ['classCode', 'date', 'studentNo', 'text', 'updatedAt', 'teacherEmail'],
+  // 학급 코드를 바꾼 기록: 예전 코드로 전송을 기다리던 평가를 새 학급으로 연결
+  ClassAliases: ['oldCode', 'newCode', 'changedAt', 'teacherEmail'],
 };
 
 const STUDENT_SESSION_DAYS = 180;
@@ -204,6 +206,98 @@ const ACTIONS = {
     return { classes: classesOf_(email), isAdmin: isAdmin_(email) };
   },
 
+  // 교사: 학급 코드 바꾸기 (모든 시트의 코드를 함께 바꿈)
+  changeClassCode(req) {
+    const c = teacherClass_(req);
+    const oldCode = c.classCode;
+    const newCode = String(req.newCode || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{4,10}$/.test(newCode)) fail_('학급 코드는 영문 대문자·숫자 4~10자로 정해 주세요.', 'BAD');
+    if (newCode === oldCode) fail_('지금과 같은 코드입니다.', 'BAD');
+    if (findClass_(newCode)) fail_('이미 다른 학급이 쓰고 있는 코드입니다.', 'BAD');
+    const taken = aliasOf_(newCode);
+    if (taken && taken.newCode !== oldCode) fail_('예전에 다른 학급이 쓰던 코드라서 쓸 수 없습니다.', 'BAD');
+    const moved = {
+      Records: replaceCode_('Records', 'classCode', oldCode, newCode),
+      Feedback: replaceCode_('Feedback', 'classCode', oldCode, newCode),
+      StudentPins: replaceCode_('StudentPins', 'classCode', oldCode, newCode),
+      StudentSessions: replaceCode_('StudentSessions', 'classCode', oldCode, newCode),
+      RoleHistory: replaceCode_('RoleHistory', 'classCode', oldCode, newCode),
+    };
+    replaceCode_('Classes', 'classCode', oldCode, newCode);
+    // 별칭: 이 학급의 예전 코드들이 모두 새 코드를 가리키게, 되돌린 코드는 별칭에서 제외
+    replaceCode_('ClassAliases', 'newCode', oldCode, newCode);
+    if (taken) sheet_('ClassAliases').getRange(taken._row, 1, 1, 2).setValues([['', '']]);
+    sheet_('ClassAliases').appendRow([oldCode, newCode, new Date().toISOString(), c.teacherEmail]);
+    return { oldCode, newCode, moved, cls: toClass_(findClass_(newCode)) };
+  },
+
+  // 관리자: 전체 현황
+  adminOverview(req) {
+    adminAuth_(req);
+    const now = new Date();
+    const tz = Session.getScriptTimeZone();
+    const day = d => Utilities.formatDate(d, tz, 'yyyy-MM-dd');
+    const today = day(now);
+    const weekAgo = day(new Date(now.getTime() - 6 * 86400000));
+    const month = today.slice(0, 7);
+    const teachers = rows_('Teachers');
+    const classes = rows_('Classes');
+    const records = rows_('Records');
+    const feedback = rows_('Feedback').filter(f => f.text);
+    const sessions = rows_('Sessions');
+    const lastLogin = {};
+    sessions.forEach(x => {
+      // 세션 만료일 - 유지 기간 = 로그인 시각
+      const t = new Date(new Date(x.expiresAt).getTime() - SESSION_DAYS * 86400000).toISOString();
+      if (x.expiresAt > '1970-01-02' && (!lastLogin[x.email] || t > lastLogin[x.email])) lastLogin[x.email] = t;
+    });
+    const tName = {};
+    teachers.forEach(t => { tName[t.email] = t.name; });
+    let quota = null;
+    try { quota = MailApp.getRemainingDailyQuota(); } catch (e) { /* 권한 없음 */ }
+    let sheetUrl = '';
+    try { sheetUrl = ss_().getUrl(); } catch (e) { /* 없음 */ }
+    return {
+      serverVersion: SERVER_VERSION,
+      sheetUrl,
+      mailQuota: quota,
+      admins: ADMIN_EMAILS.length ? ADMIN_EMAILS : teachers.slice(0, 1).map(t => t.email),
+      signupCode: !!SIGNUP_CODE,
+      counts: {
+        teachers: teachers.filter(t => !t.status || t.status === 'approved').length,
+        pending: teachers.filter(t => t.status === 'pending').length,
+        classes: classes.length,
+        students: classes.reduce((a, c) => a + parseJson_(c.studentsJson, []).length, 0),
+        records: records.length,
+        recordsToday: records.filter(r => r.date === today).length,
+        recordsWeek: records.filter(r => r.date >= weekAgo).length,
+        recordsMonth: records.filter(r => r.date.indexOf(month) === 0).length,
+        feedback: feedback.length,
+        activeClassesWeek: new Set(records.filter(r => r.date >= weekAgo).map(r => r.classCode)).size,
+      },
+      daily: Array.from({ length: 14 }, (_, i) => {
+        const d = day(new Date(now.getTime() - (13 - i) * 86400000));
+        return { date: d, records: records.filter(r => r.date === d).length };
+      }),
+      classes: classes.map(c => {
+        const rs = records.filter(r => r.classCode === c.classCode);
+        const last = rs.reduce((m, r) => (r.date > m ? r.date : m), '');
+        return {
+          classCode: c.classCode, className: c.className, teacher: tName[c.teacherEmail] || c.teacherEmail,
+          teacherEmail: c.teacherEmail, students: parseJson_(c.studentsJson, []).length,
+          recordsWeek: rs.filter(r => r.date >= weekAgo).length, recordsTotal: rs.length, lastDate: last,
+          avg: rs.length ? rs.reduce((a, r) => a + Number(r.score), 0) / rs.length : null,
+        };
+      }),
+      teachers: teachers.map(t => ({
+        email: t.email, name: t.name, status: t.status || 'approved', createdAt: t.createdAt,
+        lastLogin: lastLogin[t.email] || '', isAdmin: isAdmin_(t.email),
+        classes: classes.filter(c => c.teacherEmail === t.email).length,
+      })),
+      sheets: Object.keys(SHEETS).map(n => ({ name: n, rows: Math.max(0, sheet_(n).getLastRow() - 1) })),
+    };
+  },
+
   // 관리자: 교사 목록과 가입 신청
   adminListTeachers(req) {
     adminAuth_(req);
@@ -248,6 +342,7 @@ const ACTIONS = {
     const c = req.cls || {};
     const code = String(c.classCode || '').toUpperCase();
     if (!/^[A-Z0-9]{4,10}$/.test(code)) fail_('학급 코드 형식이 올바르지 않습니다.', 'BAD');
+    if (!findClass_(code) && aliasOf_(code)) fail_('이 학급의 코드가 바뀌었습니다. 화면을 새로고침한 뒤 다시 저장해 주세요.', 'BAD');
     const className = String(c.className || '').trim();
     if (!className) fail_('학급 이름을 입력해 주세요.', 'BAD');
     const students = (c.students || [])
@@ -300,7 +395,7 @@ const ACTIONS = {
 
   getClassConfig(req) {
     const c = findClass_(req.classCode);
-    if (!c) fail_('학급 코드를 찾을 수 없습니다.', 'NOT_FOUND');
+    if (!c) failNotFound_(req.classCode);
     const cls = toClass_(c);
     delete cls.teacherEmail;
     delete cls.roleMonths;
@@ -308,7 +403,7 @@ const ACTIONS = {
   },
 
   submitRecords(req) {
-    const c = findClass_(req.classCode);
+    const c = findClass_(req.classCode, true); // 코드가 바뀌기 전에 저장된 평가도 받음
     if (!c) fail_('학급 코드를 찾을 수 없습니다.', 'NOT_FOUND');
     const cls = toClass_(c);
     const st = req.student || {};
@@ -366,7 +461,7 @@ const ACTIONS = {
   // → newPin·newPin2 와 함께 다시 오면 새 비밀번호로 바꾸고 입장
   studentLogin(req) {
     const c = findClass_(req.classCode);
-    if (!c) fail_('학급 코드를 찾을 수 없습니다.', 'NOT_FOUND');
+    if (!c) failNotFound_(req.classCode);
     const cls = toClass_(c);
     const no = String(parseInt(req.number, 10));
     const strip = v => String(v || '').replace(/\s/g, '');
@@ -668,9 +763,37 @@ function auth_(req) {
   return s.email;
 }
 
-function findClass_(code) {
+function findClass_(code, allowOldCode) {
   code = String(code || '').trim().toUpperCase();
-  return rows_('Classes').find(r => r.classCode === code);
+  const c = rows_('Classes').find(r => r.classCode === code);
+  if (c || !allowOldCode) return c;
+  const alias = aliasOf_(code);
+  return alias ? rows_('Classes').find(r => r.classCode === alias.newCode) : undefined;
+}
+
+function aliasOf_(code) {
+  return rows_('ClassAliases').find(a => a.oldCode === String(code || '').trim().toUpperCase());
+}
+
+function failNotFound_(code) {
+  if (aliasOf_(code)) fail_('학급 코드가 바뀌었어요. 선생님께 새 학급 코드를 물어보세요.', 'NOT_FOUND');
+  fail_('학급 코드를 찾을 수 없습니다.', 'NOT_FOUND');
+}
+
+// 시트의 한 열에서 학급 코드를 한 번에 바꿈
+function replaceCode_(name, column, oldCode, newCode) {
+  const sh = sheet_(name);
+  const n = sh.getLastRow() - 1;
+  if (n < 1) return 0;
+  const col = SHEETS[name].indexOf(column) + 1;
+  const range = sh.getRange(2, col, n, 1);
+  let count = 0;
+  const vals = range.getValues().map(r => {
+    if (String(r[0]) === oldCode) { count++; return [newCode]; }
+    return [r[0]];
+  });
+  if (count) range.setValues(vals);
+  return count;
 }
 
 function parseJson_(s, def) {

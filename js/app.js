@@ -1,7 +1,8 @@
 'use strict';
 
 // 화면 아래에 표시되는 앱 버전 (sw.js 의 CACHE 버전과 함께 올려주세요)
-const APP_VERSION = 'v16 (2026.11.18)';
+const APP_VERSION = 'v17 (2026.11.18)';
+const APP_VER = APP_VERSION.split(' ')[0];
 
 const SCALE = CONFIG.SCALE; // 높은 점수부터
 const MAX_SCORE = Math.max(...SCALE.map(s => s.value));
@@ -60,6 +61,7 @@ function toast(msg, type = '') {
 
 function render(html) {
   viewSeq++;
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
   $app.className = 'wrap';
   $app.innerHTML = html;
   window.scrollTo(0, 0);
@@ -420,6 +422,41 @@ function viewServer() {
   };
 }
 
+// ---------- 새 버전 알림 ----------
+// 배포된 version.json 과 지금 실행 중인 앱 버전을 비교 (새 버전을 올릴 때 version.json 도 함께 바꿔 주세요)
+let latestVersion = null;
+let lastUpdateCheck = 0;
+async function checkAppUpdate() {
+  if (!navigator.onLine || Date.now() - lastUpdateCheck < 5 * 60000) return;
+  lastUpdateCheck = Date.now();
+  try {
+    const res = await fetch('version.json', { cache: 'no-store' });
+    if (!res.ok) return;
+    latestVersion = await res.json();
+  } catch (e) { return; }
+  renderUpdateNotice();
+}
+const hasUpdate = () => latestVersion && latestVersion.version && latestVersion.version !== APP_VER;
+
+function renderUpdateNotice() {
+  const bar = document.getElementById('updatebar');
+  bar.hidden = !hasUpdate();
+  if (hasUpdate()) {
+    bar.innerHTML = `<span>🆕 새 버전(<b>${esc(latestVersion.version)}</b>)이 나왔어요. 지금 업데이트해 주세요.
+      ${latestVersion.notes ? `<span class="muted small hide-sm">(${esc(latestVersion.notes.join(', '))})</span>` : ''}</span>
+      <button class="btn sm primary" id="updateNow">업데이트</button>`;
+    bar.querySelector('#updateNow').onclick = forceUpdate;
+  }
+  document.querySelectorAll('.update-hint').forEach(el => { el.innerHTML = updateHintHtml(); });
+}
+
+// '최신 버전으로 업데이트' 버튼 아래 안내 문구
+function updateHintHtml() {
+  return hasUpdate()
+    ? `<b class="warn-text">⚠️ 새 버전(${esc(latestVersion.version)})이 있어요. 위 버튼을 눌러 업데이트해 주세요.</b>`
+    : '화면이 예전 그대로이거나 이상하면 눌러 주세요. 입력한 기록과 로그인은 그대로 유지돼요.';
+}
+
 // 저장된 앱 파일을 모두 지우고 새로 받기 (입력한 기록·로그인은 그대로 유지)
 async function forceUpdate() {
   if (!navigator.onLine) return toast('인터넷에 연결된 상태에서 업데이트할 수 있어요.', 'warn');
@@ -462,7 +499,10 @@ function viewHome() {
     </div>
     ${apiUrl() ? '' : `<p class="notice warn">서버가 아직 연결되지 않았습니다. 아래 <b>서버 연결</b>에서 연결해 주세요.</p>`}
     <p class="center"><button class="link sm" id="goServer">⚙️ 서버 연결</button></p>
-    <p class="center muted small">책임플러스 ${APP_VERSION} · <button class="link sm" id="forceUpdate">최신 버전으로 업데이트</button></p>`);
+    <p class="center muted small">책임플러스 ${APP_VERSION} · <button class="link sm" id="forceUpdate">최신 버전으로 업데이트</button><br>
+      <span class="update-hint">${updateHintHtml()}</span></p>
+    <p class="center"><button class="link sm" id="goAdminHome">👑 관리자</button></p>`);
+  document.getElementById('goAdminHome').onclick = openAdmin;
   document.getElementById('goServer').onclick = () => viewServer();
   document.getElementById('forceUpdate').onclick = forceUpdate;
   document.getElementById('goStudent').onclick = viewStudentLogin;
@@ -1032,6 +1072,7 @@ async function startTeacher(session) {
   await DB.set('teacherSession', session);
   renderUser();
   Sync.run();
+  if (adminAfterLogin && session.isAdmin) { adminAfterLogin = false; return viewAdminConsole(); }
   viewTeacherHome();
 }
 
@@ -1178,7 +1219,7 @@ async function viewTeacherHome(refresh = true) {
         ${state.teacher.isAdmin ? `<section class="card admin-card">
           <h3>👑 교사 가입 관리</h3>
           <p class="muted small" id="adminSummary">가입 신청을 확인하는 중…</p>
-          <button class="btn sm primary" id="goAdmin">관리하기</button>
+          <button class="btn sm primary" id="goAdmin">👑 관리자 콘솔 열기</button>
         </section>` : ''}
         <section class="card">
           <h3>학생 입장 안내</h3>
@@ -1207,6 +1248,7 @@ async function viewTeacherHome(refresh = true) {
             <button class="btn sm ghost" id="goServer">⚙️ 서버 연결</button>
             <button class="btn sm ghost" id="forceUpdate">최신 버전으로 업데이트</button>
           </div>
+          <p class="muted small update-hint">${updateHintHtml()}</p>
         </section>
       </aside>
     </div>`);
@@ -1234,7 +1276,7 @@ async function viewTeacherHome(refresh = true) {
     .then(t => { const el = document.getElementById('serverState'); if (el && seq === viewSeq) el.textContent = t; });
 
   if (state.teacher.isAdmin) {
-    document.getElementById('goAdmin').onclick = viewAdmin;
+    document.getElementById('goAdmin').onclick = () => viewAdminConsole();
     api('adminListTeachers', { token: state.teacher.token }).then(r => {
       const n = r.teachers.filter(x => x.status === 'pending').length;
       const el = document.getElementById('adminSummary');
@@ -1244,7 +1286,7 @@ async function viewTeacherHome(refresh = true) {
       if (n) document.getElementById('welcomeStats').insertAdjacentHTML('beforeend',
         `<span class="alert-chip" id="pendingChip">👑 가입 승인 대기 <b>${n}</b>명</span>`);
       const chip = document.getElementById('pendingChip');
-      if (chip) chip.onclick = viewAdmin;
+      if (chip) chip.onclick = () => viewAdminConsole('teachers');
     }).catch(() => {
       const el = document.getElementById('adminSummary');
       if (el) el.textContent = '인터넷에 연결되면 가입 신청을 확인할 수 있어요.';
@@ -1275,79 +1317,197 @@ async function viewTeacherHome(refresh = true) {
   }
 }
 
-// ---------- 관리자: 교사 가입 관리 ----------
+// ---------- 관리자 콘솔 (최고 관리자 전용) ----------
 
-async function viewAdmin() {
+let adminAfterLogin = false;
+
+// 첫 화면의 '👑 관리자' 또는 주소 #admin 으로 들어옴
+function openAdmin() {
+  if (state.teacher && state.teacher.isAdmin) return viewAdminConsole();
+  if (state.teacher) { toast('관리자만 열 수 있는 페이지입니다.', 'warn'); return viewTeacherHome(); }
+  adminAfterLogin = true;
+  viewTeacherLogin();
+  const h = document.querySelector('#f h2');
+  if (h) h.insertAdjacentHTML('afterend', '<p class="notice small">👑 관리자 콘솔을 열려면 관리자 교사 아이디로 로그인하세요.</p>');
+}
+
+const ADMIN_TABS = [['overview', '📊 현황'], ['teachers', '👩‍🏫 교사 관리'], ['classes', '🏫 학급 현황'], ['system', '⚙️ 시스템']];
+
+async function viewAdminConsole(tab = 'overview') {
+  if (!state.teacher || !state.teacher.isAdmin) return openAdmin();
   const seq = render(`
-    <section class="page-head">
-      <div><p class="eyebrow">최고 관리자</p><h1>👑 교사 가입 관리</h1></div>
-      <button class="btn ghost" id="back">← 내 학급</button>
+    <section class="admin-head">
+      <div><p class="eyebrow">최고 관리자 · ${esc(state.teacher.name)}</p><h1>👑 관리자 콘솔</h1></div>
+      <div class="actions"><button class="btn ghost" id="reload">새로고침</button><button class="btn ghost" id="back">← 내 학급</button></div>
     </section>
-    <p class="hint">새로 가입한 교사는 관리자가 <b>승인</b>해야 로그인할 수 있습니다. 승인·거절하면 교사 아이디로 안내 메일이 갑니다.</p>
+    <nav class="tabs">${ADMIN_TABS.map(([k, label]) => `<button data-atab="${k}" class="${k === tab ? 'on' : ''}">${label}<span class="tab-badge" data-badge="${k}"></span></button>`).join('')}</nav>
     <div id="adminBody"><section class="card"><p class="muted">불러오는 중…</p></section></div>`);
   $app.classList.add('wide');
+  history.replaceState(null, '', location.pathname + location.search + '#admin');
   document.getElementById('back').onclick = () => viewTeacherHome();
+  document.getElementById('reload').onclick = () => viewAdminConsole(tab);
+  $app.querySelectorAll('[data-atab]').forEach(b => b.onclick = () => viewAdminConsole(b.dataset.atab));
 
-  const fmtDate = iso => (iso ? new Date(iso).toLocaleDateString('ko-KR', { year: 'numeric', month: 'numeric', day: 'numeric' }) : '');
-  const setStatus = async (email, status, name) => {
-    const msg = status === 'approved' ? `${name} 선생님의 가입을 승인할까요?` : `${name} 선생님의 가입을 거절할까요?\n거절하면 이 계정으로 로그인할 수 없습니다.`;
-    if (!confirm(msg)) return;
-    try {
-      await api('adminSetTeacherStatus', { token: state.teacher.token, email, status, appUrl: appAddress() });
-      toast(status === 'approved' ? `${name} 선생님을 승인했습니다.` : `${name} 선생님의 가입을 거절했습니다.`, 'ok');
-      load();
-    } catch (e) {
-      toast(isNetErr(e) ? '인터넷에 연결된 상태에서 할 수 있어요.' : e.message, 'warn');
-    }
-  };
-
-  async function load() {
-    const body = document.getElementById('adminBody');
-    let teachers;
-    try {
-      teachers = (await api('adminListTeachers', { token: state.teacher.token })).teachers;
-    } catch (e) {
-      if (seq !== viewSeq) return;
-      body.innerHTML = `<section class="card"><p class="notice warn">${esc(isNetErr(e) ? '인터넷에 연결된 상태에서 볼 수 있어요.' : e.message)}</p></section>`;
-      return;
-    }
+  let d;
+  try {
+    d = await api('adminOverview', { token: state.teacher.token });
+  } catch (e) {
     if (seq !== viewSeq) return;
-    const by = st => teachers.filter(t => t.status === st).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    const pending = by('pending');
-    const approved = by('approved');
-    const rejected = by('rejected');
+    if (e.code === 'AUTH') Sync.onAuthNeeded();
+    document.getElementById('adminBody').innerHTML = `<section class="card"><p class="notice warn">${esc(
+      isNetErr(e) ? '관리자 콘솔은 인터넷에 연결된 상태에서 볼 수 있어요.' : e.code === 'OLD_SERVER' ? '서버 코드가 예전 버전입니다. Apps Script를 최신 코드로 업데이트해 주세요.' : e.message)}</p></section>`;
+    return;
+  }
+  if (seq !== viewSeq) return;
+  const badge = $app.querySelector('[data-badge="teachers"]');
+  if (d.counts.pending) badge.textContent = d.counts.pending;
+  const body = document.getElementById('adminBody');
+  const fmtDate = iso => (iso ? new Date(iso).toLocaleDateString('ko-KR', { year: '2-digit', month: 'numeric', day: 'numeric' }) : '–');
+  const fmtShort = ymd => (ymd ? `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8))}` : '–');
+
+  if (tab === 'overview') {
+    const c = d.counts;
+    const max = Math.max(1, ...d.daily.map(x => x.records));
+    const recent = d.teachers.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 5);
+    const active = d.classes.slice().sort((a, b) => b.recordsWeek - a.recordsWeek).slice(0, 5);
     body.innerHTML = `
+      ${c.pending ? `<p class="notice warn">👩‍🏫 가입 승인을 기다리는 교사가 <b>${c.pending}명</b> 있습니다. <button class="link" id="toTeachers">지금 확인하기 →</button></p>` : ''}
+      <div class="tiles admin-tiles">
+        <div class="tile"><span>승인된 교사</span><b>${c.teachers}<small>명</small></b></div>
+        <div class="tile"><span>학급</span><b>${c.classes}<small>개</small></b></div>
+        <div class="tile"><span>학생</span><b>${c.students}<small>명</small></b></div>
+        <div class="tile"><span>이번 주 활동 학급</span><b>${c.activeClassesWeek}<small>/ ${c.classes}</small></b></div>
+        <div class="tile"><span>오늘 평가</span><b>${c.recordsToday}<small>건</small></b></div>
+        <div class="tile"><span>최근 7일 평가</span><b>${c.recordsWeek}<small>건</small></b></div>
+        <div class="tile"><span>이번 달 평가</span><b>${c.recordsMonth}<small>건</small></b></div>
+        <div class="tile"><span>선생님 피드백</span><b>${c.feedback}<small>건</small></b></div>
+      </div>
+      <section class="card">
+        <h3>최근 14일 평가 건수 <span class="muted small">전체 학급 합계</span></h3>
+        <div class="mini-chart" role="img" aria-label="최근 14일 날짜별 평가 건수">
+          ${d.daily.map(x => `<div class="mc-col" title="${fmtShort(x.date)} · ${x.records}건">
+            <span class="mc-val">${x.records || ''}</span>
+            <span class="mc-bar" style="height:${Math.round((x.records / max) * 100)}%"></span>
+            <span class="mc-label">${fmtShort(x.date)}</span></div>`).join('')}
+        </div>
+      </section>
+      <div class="admin-grid">
+        <section class="card">
+          <h3>이번 주 활발한 학급</h3>
+          ${active.length ? `<ul class="list compact">${active.map(x => `<li><span>${esc(x.className)} <span class="muted small">${esc(x.teacher)}</span></span><b>${x.recordsWeek}건</b></li>`).join('')}</ul>` : '<p class="muted">아직 학급이 없습니다.</p>'}
+        </section>
+        <section class="card">
+          <h3>최근 가입 교사</h3>
+          <ul class="list compact">${recent.map(t => `<li><span>${esc(t.name)} <span class="muted small">${esc(t.email)}</span></span>
+            ${t.status === 'pending' ? '<span class="status wait">승인 대기</span>' : t.status === 'rejected' ? '<span class="status">거절</span>' : `<span class="muted small">${fmtDate(t.createdAt)}</span>`}</li>`).join('')}</ul>
+        </section>
+      </div>`;
+    const tt = body.querySelector('#toTeachers');
+    if (tt) tt.onclick = () => viewAdminConsole('teachers');
+  }
+
+  if (tab === 'teachers') {
+    const by = st => d.teachers.filter(t => t.status === st).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    const pending = by('pending');
+    const rejected = by('rejected');
+    const approved = by('approved');
+    body.innerHTML = `
+      <p class="hint">새로 가입한 교사는 관리자가 <b>승인</b>해야 로그인할 수 있습니다. 승인·거절하면 교사 아이디로 안내 메일이 갑니다.</p>
       <section class="card">
         <h3>승인 대기 <span class="muted small">${pending.length}명</span></h3>
         ${pending.length ? `<ul class="list">${pending.map(t => `<li>
-          <div><b>${esc(t.name)}</b> <span class="muted small">${esc(t.email)}</span><br>
-            <span class="muted small">신청일 ${esc(fmtDate(t.createdAt))}</span></div>
+          <div><b>${esc(t.name)}</b> <span class="muted small">${esc(t.email)}</span><br><span class="muted small">신청일 ${fmtDate(t.createdAt)}</span></div>
           <span class="row-actions">
             <button class="btn sm primary" data-ok="${esc(t.email)}" data-name="${esc(t.name)}">승인</button>
             <button class="btn sm ghost" data-no="${esc(t.email)}" data-name="${esc(t.name)}">거절</button>
-          </span></li>`).join('')}</ul>`
-        : '<p class="muted">새로운 가입 신청이 없습니다.</p>'}
+          </span></li>`).join('')}</ul>` : '<p class="muted">새로운 가입 신청이 없습니다.</p>'}
       </section>
       <section class="card">
         <h3>승인된 교사 <span class="muted small">${approved.length}명</span></h3>
         <div class="table-wrap"><table>
-          <thead><tr><th>이름</th><th>아이디</th><th>가입일</th><th class="num">학급</th><th class="num">학생</th></tr></thead>
+          <thead><tr><th>이름</th><th>아이디</th><th>가입일</th><th>최근 로그인</th><th class="num">학급</th></tr></thead>
           <tbody>${approved.map(t => `<tr><td class="nowrap">${esc(t.name)} ${t.isAdmin ? '<span class="tag">관리자</span>' : ''}</td>
-            <td>${esc(t.email)}</td><td class="nowrap">${esc(fmtDate(t.createdAt))}</td>
-            <td class="num">${t.classes}</td><td class="num">${t.students}</td></tr>`).join('')}</tbody>
+            <td>${esc(t.email)}</td><td class="nowrap">${fmtDate(t.createdAt)}</td><td class="nowrap">${fmtDate(t.lastLogin)}</td>
+            <td class="num">${t.classes}</td></tr>`).join('')}</tbody>
         </table></div>
       </section>
       ${rejected.length ? `<section class="card">
         <h3>거절된 신청 <span class="muted small">${rejected.length}명</span></h3>
-        <ul class="list">${rejected.map(t => `<li>
-          <div><b>${esc(t.name)}</b> <span class="muted small">${esc(t.email)} · 거절 ${esc(fmtDate(t.decidedAt))}</span></div>
+        <ul class="list">${rejected.map(t => `<li><div><b>${esc(t.name)}</b> <span class="muted small">${esc(t.email)}</span></div>
           <button class="btn sm ghost" data-ok="${esc(t.email)}" data-name="${esc(t.name)}">승인으로 바꾸기</button></li>`).join('')}</ul>
-      </section>` : ''}
-      <p class="hint">관리자 지정: Apps Script 코드 맨 위의 <code>ADMIN_EMAILS</code>에 관리자 교사 아이디를 적습니다. 비워 두면 가장 먼저 가입한 교사가 관리자입니다.</p>`;
+      </section>` : ''}`;
+    const setStatus = async (email, status, name) => {
+      const msg = status === 'approved' ? `${name} 선생님의 가입을 승인할까요?` : `${name} 선생님의 가입을 거절할까요?\n거절하면 이 계정으로 로그인할 수 없습니다.`;
+      if (!confirm(msg)) return;
+      try {
+        await api('adminSetTeacherStatus', { token: state.teacher.token, email, status, appUrl: appAddress() });
+        toast(status === 'approved' ? `${name} 선생님을 승인했습니다.` : `${name} 선생님의 가입을 거절했습니다.`, 'ok');
+        viewAdminConsole('teachers');
+      } catch (e) {
+        toast(isNetErr(e) ? '인터넷에 연결된 상태에서 할 수 있어요.' : e.message, 'warn');
+      }
+    };
     body.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => setStatus(b.dataset.ok, 'approved', b.dataset.name));
     body.querySelectorAll('[data-no]').forEach(b => b.onclick = () => setStatus(b.dataset.no, 'rejected', b.dataset.name));
   }
-  load();
+
+  if (tab === 'classes') {
+    const rows = d.classes.slice().sort((a, b) => b.recordsWeek - a.recordsWeek || b.recordsTotal - a.recordsTotal);
+    body.innerHTML = `
+      <section class="card">
+        <div class="toolbar"><h3>학급 현황 <span class="muted small">${rows.length}개</span></h3><span class="grow"></span>
+          <input id="classSearch" class="search" placeholder="학급·교사 이름 검색"></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>학급</th><th>담당 교사</th><th>학급 코드</th><th class="num">학생</th><th class="num">최근 7일</th><th class="num">전체 평가</th><th class="num">평균</th><th>최근 평가</th></tr></thead>
+          <tbody id="classRows">${rows.map(x => `<tr data-q="${esc((x.className + ' ' + x.teacher + ' ' + x.teacherEmail).toLowerCase())}" class="${x.recordsWeek ? '' : 'dim'}">
+            <td class="nowrap"><b>${esc(x.className)}</b></td><td class="nowrap">${esc(x.teacher)}</td><td class="mono">${esc(x.classCode)}</td>
+            <td class="num">${x.students}</td><td class="num">${x.recordsWeek}</td><td class="num">${x.recordsTotal}</td>
+            <td class="num">${x.avg == null ? '–' : x.avg.toFixed(2)}</td><td class="nowrap">${fmtShort(x.lastDate)}</td></tr>`).join('')}</tbody>
+        </table></div>
+        <p class="muted small">흐리게 보이는 학급은 최근 7일 동안 평가가 없는 학급입니다. 학생 이름과 평가 내용은 각 담당 교사만 볼 수 있습니다.</p>
+      </section>`;
+    body.querySelector('#classSearch').oninput = e => {
+      const q = e.target.value.trim().toLowerCase();
+      body.querySelectorAll('#classRows tr').forEach(tr => { tr.hidden = q && !tr.dataset.q.includes(q); });
+    };
+  }
+
+  if (tab === 'system') {
+    const okServer = d.serverVersion >= CONFIG.SERVER_VERSION;
+    body.innerHTML = `
+      <div class="admin-grid">
+        <section class="card">
+          <h3>버전</h3>
+          <ul class="list compact">
+            <li><span>서버 코드</span><b>${okServer ? '✅' : '⚠️'} ${d.serverVersion} <span class="muted small">(필요 ${CONFIG.SERVER_VERSION} 이상)</span></b></li>
+            <li><span>이 기기의 앱</span><b>${esc(APP_VERSION)}</b></li>
+            <li><span>배포된 최신 앱</span><b>${latestVersion ? esc(latestVersion.version + ' (' + latestVersion.date + ')') : '확인 중…'}</b></li>
+          </ul>
+          ${okServer ? '' : '<p class="notice warn small">서버 코드를 업데이트해 주세요: ⚙️ 서버 연결 → 📋 서버 코드 복사 → Apps Script에 붙여넣기 → 배포 관리 → 새 버전</p>'}
+          <div class="actions left"><button class="btn sm ghost" id="goServer">⚙️ 서버 연결</button><button class="btn sm ghost" id="forceUpdate">최신 버전으로 업데이트</button></div>
+        </section>
+        <section class="card">
+          <h3>서버 설정</h3>
+          <ul class="list compact">
+            <li><span>관리자</span><b>${esc(d.admins.join(', '))}</b></li>
+            <li><span>가입 코드</span><b>${d.signupCode ? '사용 중' : '사용 안 함'}</b></li>
+            <li><span>오늘 남은 메일 발송</span><b>${d.mailQuota == null ? '–' : d.mailQuota + '통'}</b></li>
+          </ul>
+          ${d.sheetUrl ? `<a class="btn sm" href="${esc(d.sheetUrl)}" target="_blank" rel="noopener">📄 데이터 스프레드시트 열기</a>` : ''}
+          <p class="hint">관리자·가입 코드는 Apps Script 코드 맨 위의 <code>ADMIN_EMAILS</code>, <code>SIGNUP_CODE</code>에서 바꿉니다. 바꾼 뒤 <b>배포 관리 → 새 버전</b>으로 배포하세요.</p>
+        </section>
+      </div>
+      <section class="card">
+        <h3>데이터 시트</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>시트</th><th class="num">행 수</th></tr></thead>
+          <tbody>${d.sheets.map(x => `<tr><td class="mono">${esc(x.name)}</td><td class="num">${x.rows.toLocaleString()}</td></tr>`).join('')}</tbody>
+        </table></div>
+        <p class="muted small">구글 스프레드시트는 파일당 1,000만 칸까지 저장할 수 있습니다. 평가 기록은 1건에 16칸을 씁니다.</p>
+      </section>`;
+    body.querySelector('#goServer').onclick = () => viewServer();
+    body.querySelector('#forceUpdate').onclick = forceUpdate;
+  }
 }
 
 // ---------- 교사: 학반 세팅 (① 명단 ② 역할 ③ 배정 ④ 평가 기준) ----------
@@ -1467,7 +1627,8 @@ function viewSetup(orig, startStep = 1) {
   function drawRoster() {
     $body.innerHTML = `
       <label>학급 이름<input name="className" required placeholder="예: 3학년 2반" value="${esc(cls.className)}"></label>
-      <div class="code-box"><span>학생 입장용 학급 코드</span><b>${esc(cls.classCode)}</b></div>
+      <div class="code-box"><span>학생 입장용 학급 코드</span><b>${esc(cls.classCode)}</b>
+        ${isNew ? '' : '<button type="button" class="btn sm ghost" id="changeCode">코드 바꾸기</button>'}</div>
       <label>학생 명단
         <textarea name="roster" rows="12" placeholder="한 줄에 한 명씩: 번호 이름&#10;1 김하늘&#10;2 이바다&#10;3 박구름">${esc(cls.students.map(s => `${s.no} ${s.name}`).join('\n'))}</textarea>
         <span class="hint">엑셀·나이스에서 번호·이름 두 열을 복사해 붙여넣어도 됩니다. 명단에 있는 학생만 입장할 수 있어요.</span>
@@ -1477,6 +1638,18 @@ function viewSetup(orig, startStep = 1) {
         <span><b>🔑 학생 비밀번호 관리</b><br><span class="muted small">학생별 비밀번호 확인, 1234로 초기화</span></span>
         <button type="button" class="btn sm" id="pinManage">열기</button>
       </div>`}`;
+    const cc = $body.querySelector('#changeCode');
+    if (cc) cc.onclick = () => {
+      // 아직 저장하지 않은 이름·명단 입력은 코드가 바뀐 뒤에도 유지
+      const keep = { name: $body.querySelector('[name=className]').value, roster: $body.querySelector('[name=roster]').value };
+      changeCodeDialog(cls, () => {
+        draw();
+        $body.querySelector('[name=className]').value = keep.name;
+        const ta = $body.querySelector('[name=roster]');
+        ta.value = keep.roster;
+        ta.oninput();
+      });
+    };
     const pm = $body.querySelector('#pinManage');
     if (pm) pm.onclick = () => viewPins(cls);
     const ta = $body.querySelector('[name=roster]');
@@ -1707,6 +1880,53 @@ async function resetStudentPin(cls, no, after) {
     if (e.code === 'AUTH') Sync.onAuthNeeded();
     else toast(isNetErr(e) ? '인터넷에 연결된 상태에서 초기화할 수 있어요.' : e.message, 'warn');
   }
+}
+
+// 교사: 학급 코드 바꾸기 (서버가 모든 기록의 코드를 함께 바꿈)
+function changeCodeDialog(cls, after) {
+  openDialog(`
+    <h3>학급 코드 바꾸기</h3>
+    <p class="muted small">지금 코드: <b class="mono">${esc(cls.classCode)}</b></p>
+    <form id="ccf">
+      <label>새 학급 코드 <span class="muted small">(영문 대문자·숫자 4~10자)</span>
+        <input name="code" required class="code-input" maxlength="10" value="${genCode()}" autocomplete="off"></label>
+      <ul class="small muted">
+        <li>지난 평가 기록·피드백·학생 비밀번호는 <b>그대로 이어집니다.</b></li>
+        <li>학생들은 다음에 입장할 때 <b>새 코드</b>를 입력해야 합니다. 이미 입장해 있는 학생은 그대로 쓸 수 있어요.</li>
+        <li>예전 코드로 전송을 기다리던 평가도 새 학급으로 들어옵니다.</li>
+      </ul>
+      <p class="form-error" hidden></p>
+      <button class="btn primary block">코드 바꾸기</button>
+    </form>`);
+  const f = $dialog.querySelector('#ccf');
+  f.onsubmit = e => {
+    e.preventDefault();
+    busy(f.querySelector('.primary'), async () => {
+      formError(f);
+      const newCode = f.code.value.trim().toUpperCase();
+      if (!/^[A-Z0-9]{4,10}$/.test(newCode)) return formError(f, '영문 대문자와 숫자로 4~10자를 입력해 주세요.');
+      const old = cls.classCode;
+      const waiting = (await DB.outboxAll()).filter(o =>
+        (o.action === 'saveClass' && o.data.cls.classCode === old) || (o.action === 'saveFeedback' && o.data.classCode === old));
+      if (waiting.length) return formError(f, `이 학급의 전송 대기 항목이 ${waiting.length}건 있습니다. 인터넷에 연결해 먼저 전송한 뒤 바꿔 주세요.`);
+      let r;
+      try {
+        r = await api('changeClassCode', { token: state.teacher.token, classCode: old, newCode });
+      } catch (err) {
+        return formError(f, isNetErr(err) ? '인터넷에 연결된 상태에서 바꿀 수 있어요.' : err.message);
+      }
+      // 이 기기에 저장된 학급 정보와 기록도 새 코드로
+      const key = 'classes:' + state.teacher.email;
+      const list = ((await DB.get(key)) || []).map(c => (c.classCode === old ? { ...c, classCode: newCode } : c));
+      await DB.set(key, list);
+      const recs = await DB.get('records:' + old);
+      if (recs) { await DB.set('records:' + newCode, recs); await DB.del('records:' + old); }
+      cls.classCode = newCode;
+      $dialog.close();
+      toast(`학급 코드를 ${newCode}(으)로 바꿨습니다. 학생들에게 새 코드를 알려주세요.`, 'ok');
+      if (after) after();
+    });
+  };
 }
 
 // 교사: 학생 비밀번호 확인·초기화
@@ -2085,7 +2305,9 @@ async function init() {
   }
   window.addEventListener('online', () => { renderSync(); Sync.run(); });
   window.addEventListener('offline', renderSync);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { Sync.run(); checkAppUpdate(); } });
+  window.addEventListener('online', checkAppUpdate);
+  window.addEventListener('hashchange', () => { if (location.hash === '#admin') openAdmin(); });
   setInterval(async () => {
     if (navigator.onLine && (await DB.outboxAll()).length) Sync.run();
   }, 30000);
@@ -2095,10 +2317,12 @@ async function init() {
   state.student = state.teacher ? null : (await DB.get('studentSession')) || null;
   renderUser();
   renderSync();
-  if (state.teacher) viewTeacherHome();
+  if (location.hash === '#admin') openAdmin();
+  else if (state.teacher) viewTeacherHome();
   else if (state.student) viewStudent();
   else viewHome();
   Sync.run();
+  checkAppUpdate();
 }
 
 init();
